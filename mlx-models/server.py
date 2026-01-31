@@ -30,10 +30,11 @@ from pydantic import BaseModel, Field
 MODEL_PATH = "./GLM-4.7-Flash-4bit"
 HOST = "0.0.0.0"
 PORT = int(os.environ.get('PORT', 8000))
-MAX_CACHEABLE_TOKENS = 2048  # Enable system prompt caching up to 2048 tokens
-PREFILL_STEP_SIZE = 2048  # Reduced for memory safety (default 8192)
-KV_BITS = None  # Disable quantization for stability (was 4)
-MAX_KV_SIZE = 10000  # Default mlx_lm value
+MAX_CACHEABLE_TOKENS = 512  # Limit cache to 512 tokens for memory safety
+PREFILL_STEP_SIZE = 1024  # Reduced for memory safety
+KV_BITS = 8  # 8-bit quantization for KV cache (balanced speed/memory)
+MAX_KV_SIZE = 2048  # Limit total KV cache size (prefix + generation)
+ENABLE_PREFILL = True  # Can be disabled if memory issues persist
 
 # Global model and tokenizer
 model = None
