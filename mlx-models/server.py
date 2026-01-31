@@ -30,8 +30,10 @@ from pydantic import BaseModel, Field
 MODEL_PATH = "./GLM-4.7-Flash-4bit"
 HOST = "0.0.0.0"
 PORT = int(os.environ.get('PORT', 8000))
-MAX_CACHEABLE_TOKENS = 256  # Don't cache prefixes longer than this
-PREFILL_STEP_SIZE = 8192  # Tokens to process in parallel during prefill
+MAX_CACHEABLE_TOKENS = 2048  # Enable system prompt caching up to 2048 tokens
+PREFILL_STEP_SIZE = 2048  # Reduced for memory safety (default 8192)
+KV_BITS = None  # Disable quantization for stability (was 4)
+MAX_KV_SIZE = 10000  # Default mlx_lm value
 
 # Global model and tokenizer
 model = None
@@ -73,29 +75,49 @@ def get_system_prompt_cache(system_prompt):
     hash_key = hashlib.sha256(system_prompt.encode()).hexdigest()
     
     if hash_key in system_prompt_caches:
-        print(f"Cache hit for system prompt (hash: {hash_key[:16]}...)")
+        print("Cache hit for system prompt (hash: {}...)".format(hash_key[:16]))
         return system_prompt_caches[hash_key]
     
     # Create new cache
-    print(f"Creating new cache for system prompt (hash: {hash_key[:16]}...)")
+    print("Creating new cache for system prompt (hash: {}...)".format(hash_key[:16]))
     if model is None:
         print("Warning: Model not loaded, cannot create cache")
         return None, 0
         
-    # Create empty cache
+    # If caching is disabled, return None
+    if MAX_CACHEABLE_TOKENS <= 0:
+        return None, 0
+
+    # Create cache
     prompt_cache = cache.make_prompt_cache(model)
     
     # Get prefix tokens length (system prompt up to <|user|> token)
     prefix_tokens = get_prefix_tokens(system_prompt)
     prefix_len = len(prefix_tokens) if prefix_tokens else 0
-    print(f"Prefix length: {prefix_len} tokens")
+    print("Prefix length: {} tokens".format(prefix_len))
     
     # Check if prefix is too long to cache
     if prefix_len > MAX_CACHEABLE_TOKENS:
-        print(f"Warning: Prefix too long ({prefix_len} > {MAX_CACHEABLE_TOKENS} tokens), caching only first {MAX_CACHEABLE_TOKENS} tokens")
+        print("Warning: Prefix too long ({} > {} tokens), caching only first {} tokens".format(prefix_len, MAX_CACHEABLE_TOKENS, MAX_CACHEABLE_TOKENS))
         prefix_len = MAX_CACHEABLE_TOKENS
     
-    # Store cache (empty, will be filled during first generation)
+    # Prefill cache with prefix tokens if we have any
+    if prefix_len > 0 and prefix_tokens:
+        # Use only the tokens we're going to cache (might be truncated to MAX_CACHEABLE_TOKENS)
+        tokens_to_cache = prefix_tokens[:prefix_len]
+        print(f"Prefilling cache with {len(tokens_to_cache)} tokens...")
+        try:
+            with mx.stream(mx.default_stream(mx.default_device())):
+                # Convert to mx.array with batch dimension
+                mx_tokens = mx.array([tokens_to_cache])
+                # Run model to fill cache
+                _ = model(mx_tokens, cache=prompt_cache)
+            print(f"Cache prefilled successfully")
+        except Exception as e:
+            print(f"Warning: Failed to prefill cache: {e}")
+            # Continue with empty cache - it will be filled during generation
+    
+    # Store cache (now prefilled)
     system_prompt_caches[hash_key] = (prompt_cache, prefix_len)
     print(f"Cache stored: hash={hash_key[:16]}..., prefix_len={prefix_len}, cache_dict_size={len(system_prompt_caches)}")
     return prompt_cache, prefix_len
@@ -191,8 +213,8 @@ async def lifespan(app: FastAPI):
                 max_tokens=2,  # Minimal generation
                 verbose=False,
                 prefill_step_size=PREFILL_STEP_SIZE,
-                kv_bits=None,
-                max_kv_size=10000
+                kv_bits=KV_BITS,
+                max_kv_size=MAX_KV_SIZE
             )
             warmup_time = time.time() - warmup_start
             print(f"✓ Warm-up completed in {warmup_time:.2f} seconds")
@@ -345,8 +367,8 @@ async def generate(request: GenerationRequest):
         verbose=False,
         prefill_step_size=PREFILL_STEP_SIZE,
         prompt_cache=prompt_cache if prompt_cache else None,
-        kv_bits=None,
-        max_kv_size=10000
+        kv_bits=KV_BITS,
+        max_kv_size=MAX_KV_SIZE
     )
     
     # Remove prompt from response
@@ -400,8 +422,8 @@ async def generate_stream_generator(prompt: str, max_tokens: int):
             prompt,
             max_tokens=max_tokens,
             prefill_step_size=PREFILL_STEP_SIZE,
-            kv_bits=None,
-            max_kv_size=10000
+            kv_bits=KV_BITS,
+            max_kv_size=MAX_KV_SIZE
         )
         
         # Process streaming responses
@@ -485,8 +507,8 @@ async def generate_openai_stream_generator(prompt: str, max_tokens: int, request
             prompt,
             max_tokens=max_tokens,
             prefill_step_size=PREFILL_STEP_SIZE,
-            kv_bits=None,
-            max_kv_size=10000,
+            kv_bits=KV_BITS,
+            max_kv_size=MAX_KV_SIZE,
             prompt_cache=prompt_cache if prompt_cache else None
         )
         
@@ -550,7 +572,7 @@ async def generate_openai_stream_generator(prompt: str, max_tokens: int, request
             total_tokens = len(tokenizer.encode(prompt)) + len(tokenizer.encode(accumulated_text))
             added_tokens = total_tokens - prefix_len
             if added_tokens > 0:
-                prompt_cache.trim(added_tokens)
+                cache.trim_prompt_cache(prompt_cache, added_tokens)
         
     except Exception as e:
         # Error chunk
@@ -589,6 +611,7 @@ async def generate_stream(request: GenerationRequest):
         }
     )
 
+@app.post("/v1/chat/completions")
 @app.post("/chat/completions")
 async def chat_completions(request: ChatRequest):
     """OpenAI-compatible chat completions endpoint."""
@@ -661,8 +684,8 @@ async def chat_completions(request: ChatRequest):
             verbose=False,
             prefill_step_size=PREFILL_STEP_SIZE,
             prompt_cache=prompt_cache if prompt_cache else None,
-            kv_bits=None,
-            max_kv_size=10000
+            kv_bits=KV_BITS,
+            max_kv_size=MAX_KV_SIZE
         )
         gen_time = time.time() - start_gen_time
         print(f"Generation time: {gen_time:.2f}s")
@@ -708,6 +731,19 @@ async def chat_completions(request: ChatRequest):
             }
         }
 
+@app.get("/v1/models")
+async def v1_models():
+    return {
+        "object": "list",
+        "data": [
+            {
+                "id": "glm-4-7-flash-4bit",
+                "object": "model",
+                "created": 0,
+                "owned_by": "local"
+            }
+        ]
+    }
 if __name__ == "__main__":
     import uvicorn
     
