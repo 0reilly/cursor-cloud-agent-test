@@ -1,0 +1,56 @@
+Testing Enhanced HMM Regime-Aware Strategy with Indicator Filtering
+======================================================================
+2026-02-19 22:41:20,989 - trading_engine - INFO - Initializing Trading Engine...
+2026-02-19 22:41:20,989 - alpaca_client - INFO - Alpaca API client initialized successfully
+2026-02-19 22:41:20,989 - hmm_regime - INFO - HMM Regime Detector initialized with 5 regimes
+2026-02-19 22:41:21,015 - hmm_regime - INFO - Fitting HMM from pre-extracted features...
+2026-02-19 22:41:21,172 - hmm_regime - INFO - HMM fitted successfully. Regime transition matrix shape: (5, 5)
+2026-02-19 22:41:21,172 - hmm_regime - INFO - Regime analysis completed
+2026-02-19 22:41:21,173 - trading_engine - INFO - HMM trained on synthetic data: 45 samples
+2026-02-19 22:41:21,173 - risk_manager - INFO - Risk Manager initialized
+2026-02-19 22:41:21,173 - trading_engine - INFO - Trading Engine initialized with 1-minute scan interval
+Account: PA37HLPU2YVA
+Cash: $52675.85
+Portfolio Value: $52847.74
+Positions: 1
+  MKRUSD: 0.099879999 units, PnL: -17.08%
+
+Running single market scan...
+2026-02-19 22:41:21,418 - trading_engine - INFO - Scanning 15 crypto markets...
+2026-02-19 22:41:21,564 - risk_manager - WARNING - Position MKRUSD is inactive, excluding from risk calculations
+2026-02-19 22:41:21,746 - alpaca_client - INFO - Retrieved 45 bars for BTC/USD (5Min)
+2026-02-19 22:41:22,809 - alpaca_client - INFO - Retrieved 44 bars for ETH/USD (5Min)
+2026-02-19 22:41:23,868 - alpaca_client - INFO - Retrieved 45 bars for SOL/USD (5Min)
+2026-02-19 22:41:24,929 - alpaca_client - INFO - Retrieved 44 bars for ADA/USD (5Min)
+2026-02-19 22:41:24,939 - hmm_regime - WARNING - Regime detection failed: '<' not supported between instances of 'NoneType' and 'float', using base analysis
+2026-02-19 22:41:25,993 - alpaca_client - INFO - Retrieved 44 bars for XRP/USD (5Min)
+2026-02-19 22:41:27,057 - alpaca_client - INFO - Retrieved 45 bars for DOGE/USD (5Min)
+2026-02-19 22:41:28,118 - alpaca_client - INFO - Retrieved 43 bars for LINK/USD (5Min)
+2026-02-19 22:41:29,171 - alpaca_client - INFO - Retrieved 40 bars for AVAX/USD (5Min)
+2026-02-19 22:41:30,242 - alpaca_client - INFO - Retrieved 45 bars for DOT/USD (5Min)
+2026-02-19 22:41:31,298 - alpaca_client - WARNING - No data returned for MATIC/USD
+2026-02-19 22:41:32,349 - alpaca_client - INFO - Retrieved 45 bars for UNI/USD (5Min)
+2026-02-19 22:41:33,415 - alpaca_client - INFO - Retrieved 45 bars for AAVE/USD (5Min)
+2026-02-19 22:41:33,424 - hmm_regime - WARNING - Regime detection failed: '<' not supported between instances of 'NoneType' and 'float', using base analysis
+2026-02-19 22:41:34,465 - alpaca_client - WARNING - No data returned for MKR/USD
+2026-02-19 22:41:35,518 - alpaca_client - WARNING - No data returned for SNX/USD
+2026-02-19 22:41:36,563 - alpaca_client - WARNING - No data returned for COMP/USD
+2026-02-19 22:41:37,600 - alpaca_client - ERROR - Error getting market data for MKRUSD: invalid symbol: MKRUSD does not match ^[A-Z]+/[A-Z]+$
+2026-02-19 22:41:37,601 - trading_engine - INFO - Market scan completed. Positions: 1, Daily PnL: $0.00
+
+Scan completed.
+Total scans: 1
+Total trades: 0
+Active positions: 1
+Circuit breaker triggered: False
+
+Regime history (9 entries):
+  2026-02-19 22:41:27.068843: STRONG_BEAR (confidence 1.00), signal: hold
+  2026-02-19 22:41:28.126147: STRONG_BEAR (confidence 1.00), signal: hold
+  2026-02-19 22:41:29.178940: STRONG_BEAR (confidence 1.00), signal: hold
+  2026-02-19 22:41:30.252598: STRONG_BEAR (confidence 1.00), signal: hold
+  2026-02-19 22:41:32.359392: STRONG_BEAR (confidence 1.00), signal: hold
+
+No trades placed.
+
+Test complete.

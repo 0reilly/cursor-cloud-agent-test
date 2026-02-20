@@ -1,0 +1,152 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Crypto Trading Performance Report</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; background-color: #f5f5f5; }
+        .container { max-width: 1200px; margin: 0 auto; background-color: white; padding: 20px; border-radius: 10px; box-shadow: 0 0 10px rgba(0,0,0,0.1); }
+        h1 { color: #2c3e50; border-bottom: 2px solid #3498db; padding-bottom: 10px; }
+        h2 { color: #34495e; margin-top: 30px; }
+        .summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 15px; margin: 20px 0; }
+        .metric { background-color: #f8f9fa; padding: 15px; border-radius: 5px; border-left: 4px solid #3498db; }
+        .metric h3 { margin-top: 0; color: #2c3e50; font-size: 14px; text-transform: uppercase; }
+        .metric-value { font-size: 24px; font-weight: bold; color: #2c3e50; }
+        .metric-positive { color: #27ae60; }
+        .metric-negative { color: #e74c3c; }
+        .chart { margin: 20px 0; text-align: center; }
+        .chart img { max-width: 100%; height: auto; border: 1px solid #ddd; border-radius: 5px; }
+        .timestamp { color: #7f8c8d; font-size: 12px; text-align: right; margin-top: 30px; }
+        table { width: 100%; border-collapse: collapse; margin: 20px 0; }
+        th, td { padding: 10px; text-align: left; border-bottom: 1px solid #ddd; }
+        th { background-color: #f2f2f2; }
+        tr:hover { background-color: #f5f5f5; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Crypto Trading Performance Report</h1>
+        <p>Generated: 2026-02-19 21:48:12</p>
+        
+        <h2>Performance Summary</h2>
+        <div class="summary">
+            <div class="metric">
+                <h3>Total Trades</h3>
+                <div class="metric-value">0</div>
+            </div>
+            <div class="metric">
+                <h3>Win Rate</h3>
+                <div class="metric-value metric-negative">
+                    0.0%
+                </div>
+            </div>
+            <div class="metric">
+                <h3>Total PnL</h3>
+                <div class="metric-value ">
+                    $0.00
+                </div>
+            </div>
+            <div class="metric">
+                <h3>Avg Trade PnL</h3>
+                <div class="metric-value ">
+                    $0.00
+                </div>
+            </div>
+            <div class="metric">
+                <h3>Sharpe Ratio</h3>
+                <div class="metric-value">
+                    0.00
+                </div>
+            </div>
+            <div class="metric">
+                <h3>Max Drawdown</h3>
+                <div class="metric-value metric-negative">
+                    0.0%
+                </div>
+            </div>
+        </div>
+        
+        <h2>Visualizations</h2>
+
+        <div class="chart">
+            <h3>Performance Report 20260219 214811 Strategy Comparison</h3>
+            <img src="performance_report_20260219_214811_strategy_comparison.png" alt="performance_report_20260219_214811_strategy_comparison.png">
+        </div>
+
+        <h2>Risk Metrics</h2>
+        <table>
+            <tr>
+                <th>Metric</th>
+                <th>Value</th>
+                <th>Description</th>
+            </tr>
+
+            <tr>
+                <td>Circuit Breaker</td>
+                <td class="">INACTIVE</td>
+                <td>Trading halted if True</td>
+            </tr>
+
+            <tr>
+                <td>Daily PnL</td>
+                <td class="">0.0</td>
+                <td>Profit/Loss for current day</td>
+            </tr>
+
+            <tr>
+                <td>Max Daily Loss</td>
+                <td class="">N/A</td>
+                <td>Maximum allowable daily loss</td>
+            </tr>
+
+            <tr>
+                <td>Remaining Daily Loss</td>
+                <td class="">N/A</td>
+                <td>Remaining loss before circuit breaker</td>
+            </tr>
+
+        </table>
+
+        <h2>Strategy Comparison Summary</h2>
+        <p>Latest comparison run: 2026-02-19T21:43:51.895507</p>
+        <p>Total symbols compared: 5</p>
+        
+        <table>
+            <tr>
+                <th>Metric</th>
+                <th>Pure Algorithmic</th>
+                <th>HMM-Regime-Aware</th>
+                <th>Difference</th>
+            </tr>
+
+            <tr>
+                <td>Buy Signals</td>
+                <td>0</td>
+                <td>0</td>
+                <td>0</td>
+            </tr>
+
+            <tr>
+                <td>Sell Signals</td>
+                <td>0</td>
+                <td>0</td>
+                <td>0</td>
+            </tr>
+
+            <tr>
+                <td>Hold Signals</td>
+                <td>5</td>
+                <td>5</td>
+                <td>0</td>
+            </tr>
+
+        </table>
+
+        <div class="timestamp">
+            Report generated by Crypto Trading System Performance Dashboard
+        </div>
+    </div>
+</body>
+</html>

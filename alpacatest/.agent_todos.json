@@ -1,0 +1,47 @@
+{
+  "hmm_fix": {
+    "id": "hmm_fix",
+    "content": "Fix fit_from_features method in CryptoHMMRegimeDetector",
+    "status": "completed",
+    "estimated_time_minutes": null,
+    "started_at": null,
+    "completed_at": null,
+    "actual_time_minutes": null
+  },
+  "comparison": {
+    "id": "comparison",
+    "content": "Run strategy comparison (pure algorithmic vs HMM-regime-aware)",
+    "status": "completed",
+    "estimated_time_minutes": null,
+    "started_at": null,
+    "completed_at": null,
+    "actual_time_minutes": null
+  },
+  "circuit_breaker": {
+    "id": "circuit_breaker",
+    "content": "Address circuit breaker triggered by stuck MKRUSD position",
+    "status": "completed",
+    "estimated_time_minutes": null,
+    "started_at": null,
+    "completed_at": null,
+    "actual_time_minutes": null
+  },
+  "dashboard": {
+    "id": "dashboard",
+    "content": "Create performance dashboard for tracking trades and metrics.",
+    "status": "completed",
+    "estimated_time_minutes": null,
+    "started_at": null,
+    "completed_at": 1771555798.169416,
+    "actual_time_minutes": null
+  },
+  "integration": {
+    "id": "integration",
+    "content": "Integrate chosen strategy into main trading engine for continuous operation.",
+    "status": "completed",
+    "estimated_time_minutes": null,
+    "started_at": 1771555798.1696692,
+    "completed_at": 1771556423.006,
+    "actual_time_minutes": 10.4
+  }
+}

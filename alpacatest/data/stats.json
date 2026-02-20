@@ -1,0 +1,14 @@
+{
+  "created_at": 1771551978,
+  "daily_tokens": {
+    "2026-02-19": {
+      "actual": 326914,
+      "estimated": 131459
+    }
+  },
+  "daily_turns": {
+    "2026-02-19": 5
+  },
+  "updated_at": 1771556533,
+  "version": 1
+}

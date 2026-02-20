@@ -1,0 +1,52 @@
+Starting HMM Regime-Aware Trading Engine Test
+============================================================
+2026-02-19 22:10:56,601 - trading_engine - INFO - Initializing Trading Engine...
+2026-02-19 22:10:56,601 - alpaca_client - INFO - Alpaca API client initialized successfully
+2026-02-19 22:10:56,601 - hmm_regime - INFO - HMM Regime Detector initialized with 5 regimes
+2026-02-19 22:10:56,625 - hmm_regime - INFO - Fitting HMM from pre-extracted features...
+2026-02-19 22:10:56,738 - hmm_regime - INFO - HMM fitted successfully. Regime transition matrix shape: (5, 5)
+2026-02-19 22:10:56,739 - hmm_regime - INFO - Regime analysis completed
+2026-02-19 22:10:56,739 - trading_engine - INFO - HMM trained on synthetic data: 45 samples
+2026-02-19 22:10:56,739 - risk_manager - INFO - Risk Manager initialized
+2026-02-19 22:10:56,739 - trading_engine - INFO - Trading Engine initialized with 5-minute scan interval
+Patching risk manager to ignore MKRUSD position...
+Account: PA37HLPU2YVA
+Cash: $52689.98
+Portfolio Value: $52861.87
+Positions: 1
+  MKRUSD: 0.099879999 units, PnL: -17.08%
+    (MKRUSD will be ignored in circuit breaker)
+
+Running 3 market scans (5-minute intervals)...
+2026-02-19 22:10:56,940 - trading_engine - INFO - Starting Trading Engine...
+2026-02-19 22:10:56,940 - risk_manager - INFO - Daily metrics reset
+2026-02-19 22:10:56,985 - trading_engine - INFO - Account: PA37HLPU2YVA
+2026-02-19 22:10:56,985 - trading_engine - INFO - Cash: $52,689.98
+2026-02-19 22:10:56,985 - trading_engine - INFO - Portfolio Value: $52,861.87
+2026-02-19 22:10:56,985 - trading_engine - INFO - Main trading loop started
+2026-02-19 22:10:56,985 - trading_engine - INFO - Scanning 15 crypto markets...
+2026-02-19 22:10:56,985 - trading_engine - INFO - Trading Engine started successfully
+2026-02-19 22:10:57,266 - alpaca_client - INFO - Retrieved 38 bars for BTC/USD (5Min)
+2026-02-19 22:10:57,279 - trading_engine - INFO - Executing buy signal for BTC/USD: 0.047251 @ $67257.49 (confidence: 0.62)
+2026-02-19 22:10:57,330 - alpaca_client - INFO - Order placed: c2d815f4-6dd5-46a4-8f04-f662ab202533 - buy 0.047251 BTC/USD (market)
+2026-02-19 22:10:57,381 - risk_manager - INFO - Trade logged: BTC/USD buy 0.047251 @ 67257.49
+2026-02-19 22:10:57,381 - trading_engine - INFO - Order placed: c2d815f4-6dd5-46a4-8f04-f662ab202533 - buy 0.047251 BTC/USD @ $67257.49
+2026-02-19 22:10:58,430 - alpaca_client - INFO - Retrieved 37 bars for ETH/USD (5Min)
+2026-02-19 22:10:59,497 - alpaca_client - INFO - Retrieved 38 bars for SOL/USD (5Min)
+2026-02-19 22:11:00,577 - alpaca_client - INFO - Retrieved 38 bars for ADA/USD (5Min)
+2026-02-19 22:11:01,633 - alpaca_client - INFO - Retrieved 37 bars for XRP/USD (5Min)
+2026-02-19 22:11:02,706 - alpaca_client - INFO - Retrieved 39 bars for DOGE/USD (5Min)
+2026-02-19 22:11:03,764 - alpaca_client - INFO - Retrieved 38 bars for LINK/USD (5Min)
+2026-02-19 22:11:04,819 - alpaca_client - INFO - Retrieved 35 bars for AVAX/USD (5Min)
+2026-02-19 22:11:05,879 - alpaca_client - INFO - Retrieved 39 bars for DOT/USD (5Min)
+2026-02-19 22:11:06,943 - alpaca_client - WARNING - No data returned for MATIC/USD
+2026-02-19 22:11:07,997 - alpaca_client - INFO - Retrieved 39 bars for UNI/USD (5Min)
+2026-02-19 22:11:09,065 - alpaca_client - INFO - Retrieved 39 bars for AAVE/USD (5Min)
+2026-02-19 22:11:10,127 - alpaca_client - WARNING - No data returned for MKR/USD
+2026-02-19 22:11:11,199 - alpaca_client - WARNING - No data returned for SNX/USD
+2026-02-19 22:11:12,246 - alpaca_client - WARNING - No data returned for COMP/USD
+2026-02-19 22:11:13,286 - alpaca_client - ERROR - Error getting market data for MKRUSD: invalid symbol: MKRUSD does not match ^[A-Z]+/[A-Z]+$
+2026-02-19 22:11:13,287 - trading_engine - INFO - Market scan completed. Positions: 1, Daily PnL: $0.00
+Scan 1/3 completed at 22:11:56
+  Latest regime: STRONG_BEAR (confidence 1.00)
+  Total trades so far: 1

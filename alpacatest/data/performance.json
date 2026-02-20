@@ -1,0 +1,26 @@
+{
+  "engine_state": {
+    "running": false,
+    "last_scan": "2026-02-19T22:41:37.600672",
+    "total_scans": 1,
+    "total_trades": 0,
+    "active_positions": 1,
+    "daily_pnl": 0.0,
+    "total_pnl": 0.0,
+    "circuit_breaker_triggered": false,
+    "last_error": null
+  },
+  "performance": {
+    "total_trades": 1,
+    "winning_trades": 0,
+    "losing_trades": 0,
+    "win_rate": 0.0,
+    "total_pnl": 0.0,
+    "daily_pnl": 0.0,
+    "max_daily_loss": 2000.0,
+    "remaining_daily_loss": 2000.0,
+    "circuit_breaker": false,
+    "last_reset": "2026-02-19T22:18:08.245833"
+  },
+  "last_updated": "2026-02-19T22:41:37.600743"
+}

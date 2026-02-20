@@ -1,0 +1,203 @@
+{
+  "timestamp": "2026-02-19T21:43:51.895507",
+  "total_symbols": 5,
+  "comparisons": [
+    {
+      "symbol": "BTC/USD",
+      "timestamp": "2026-02-19T21:43:46.617823",
+      "pure_algorithmic": {
+        "signal": "hold",
+        "confidence": 0.48565458280903345,
+        "position_size": {},
+        "reasons": [
+          "Price above SMA20 (67281.71 > 67238.49)",
+          "Stochastic oversold (6.9 < 20)"
+        ]
+      },
+      "hmm_regime_aware": {
+        "signal": "hold",
+        "confidence": 0.6856545828090335,
+        "regime_aware": true,
+        "regime_info": {
+          "regime_id": 4,
+          "regime_name": "STRONG_BEAR",
+          "confidence": 1.0,
+          "probabilities": {
+            "regime_0": 1.7080603403659863e-57,
+            "regime_1": 2.551179198121154e-88,
+            "regime_2": 0.0,
+            "regime_3": 3.9776296248369464e-154,
+            "regime_4": 1.0
+          },
+          "expected_duration": 1.0000000033479275
+        },
+        "position_size": {}
+      },
+      "comparison": {
+        "signals_match": true,
+        "confidence_diff": 0.2,
+        "signal_divergence": false
+      }
+    },
+    {
+      "symbol": "ETH/USD",
+      "timestamp": "2026-02-19T21:43:47.686972",
+      "pure_algorithmic": {
+        "signal": "hold",
+        "confidence": 0.492643504755977,
+        "position_size": {},
+        "reasons": [
+          "Price below SMA20 (1953.83 < 1953.85)"
+        ]
+      },
+      "hmm_regime_aware": {
+        "signal": "hold",
+        "confidence": 0.692643504755977,
+        "regime_aware": true,
+        "regime_info": {
+          "regime_id": 4,
+          "regime_name": "STRONG_BEAR",
+          "confidence": 1.0,
+          "probabilities": {
+            "regime_0": 2.986061098005998e-56,
+            "regime_1": 9.316569832134975e-93,
+            "regime_2": 0.0,
+            "regime_3": 8.945554356090192e-107,
+            "regime_4": 1.0
+          },
+          "expected_duration": 1.0000000033479275
+        },
+        "position_size": {}
+      },
+      "comparison": {
+        "signals_match": true,
+        "confidence_diff": 0.2,
+        "signal_divergence": false
+      }
+    },
+    {
+      "symbol": "SOL/USD",
+      "timestamp": "2026-02-19T21:43:48.756064",
+      "pure_algorithmic": {
+        "signal": "hold",
+        "confidence": 0.48649571261347296,
+        "position_size": {},
+        "reasons": [
+          "Price above SMA20 (83.11 > 82.95)",
+          "Bollinger Band overbought (82.06%)"
+        ]
+      },
+      "hmm_regime_aware": {
+        "signal": "hold",
+        "confidence": 0.686495712613473,
+        "regime_aware": true,
+        "regime_info": {
+          "regime_id": 4,
+          "regime_name": "STRONG_BEAR",
+          "confidence": 1.0,
+          "probabilities": {
+            "regime_0": 2.084721435248519e-56,
+            "regime_1": 1.8195089499432956e-91,
+            "regime_2": 0.0,
+            "regime_3": 3.832655228202027e-124,
+            "regime_4": 1.0
+          },
+          "expected_duration": 1.0000000033479275
+        },
+        "position_size": {}
+      },
+      "comparison": {
+        "signals_match": true,
+        "confidence_diff": 0.2,
+        "signal_divergence": false
+      }
+    },
+    {
+      "symbol": "ADA/USD",
+      "timestamp": "2026-02-19T21:43:49.821097",
+      "pure_algorithmic": {
+        "signal": "hold",
+        "confidence": 0.49190552648080815,
+        "position_size": {},
+        "reasons": [
+          "Price above SMA20 (0.27 > 0.27)"
+        ]
+      },
+      "hmm_regime_aware": {
+        "signal": "hold",
+        "confidence": 0.6919055264808082,
+        "regime_aware": true,
+        "regime_info": {
+          "regime_id": 4,
+          "regime_name": "STRONG_BEAR",
+          "confidence": 1.0,
+          "probabilities": {
+            "regime_0": 7.418016601269126e-56,
+            "regime_1": 2.344794855958189e-93,
+            "regime_2": 0.0,
+            "regime_3": 2.2559225575612167e-106,
+            "regime_4": 1.0
+          },
+          "expected_duration": 1.0000000033479275
+        },
+        "position_size": {}
+      },
+      "comparison": {
+        "signals_match": true,
+        "confidence_diff": 0.2,
+        "signal_divergence": false
+      }
+    },
+    {
+      "symbol": "XRP/USD",
+      "timestamp": "2026-02-19T21:43:50.890061",
+      "pure_algorithmic": {
+        "signal": "hold",
+        "confidence": 0.48928337758522494,
+        "position_size": {},
+        "reasons": [
+          "Price above SMA20 (1.42 > 1.42)"
+        ]
+      },
+      "hmm_regime_aware": {
+        "signal": "hold",
+        "confidence": 0.689283377585225,
+        "regime_aware": true,
+        "regime_info": {
+          "regime_id": 4,
+          "regime_name": "STRONG_BEAR",
+          "confidence": 1.0,
+          "probabilities": {
+            "regime_0": 6.418224521615676e-56,
+            "regime_1": 2.285666212005815e-94,
+            "regime_2": 0.0,
+            "regime_3": 7.886703493211956e-85,
+            "regime_4": 1.0
+          },
+          "expected_duration": 1.0000000033479275
+        },
+        "position_size": {}
+      },
+      "comparison": {
+        "signals_match": true,
+        "confidence_diff": 0.2,
+        "signal_divergence": false
+      }
+    }
+  ],
+  "summary": {
+    "pure_algorithmic": {
+      "buy": 0,
+      "sell": 0,
+      "hold": 5
+    },
+    "hmm_regime_aware": {
+      "buy": 0,
+      "sell": 0,
+      "hold": 5
+    },
+    "agreements": 5,
+    "agreement_rate": 100.0,
+    "regime_aware_count": 5
+  }
+}

@@ -1,0 +1,31 @@
+Starting HMM Regime-Aware Trading Engine Test (Fast)
+============================================================
+2026-02-19 22:18:07,863 - trading_engine - INFO - Initializing Trading Engine...
+2026-02-19 22:18:07,863 - alpaca_client - INFO - Alpaca API client initialized successfully
+2026-02-19 22:18:07,863 - hmm_regime - INFO - HMM Regime Detector initialized with 5 regimes
+2026-02-19 22:18:07,887 - hmm_regime - INFO - Fitting HMM from pre-extracted features...
+2026-02-19 22:18:07,987 - hmm_regime - INFO - HMM fitted successfully. Regime transition matrix shape: (5, 5)
+2026-02-19 22:18:07,987 - hmm_regime - INFO - Regime analysis completed
+2026-02-19 22:18:07,987 - trading_engine - INFO - HMM trained on synthetic data: 45 samples
+2026-02-19 22:18:07,991 - risk_manager - INFO - Risk Manager initialized
+2026-02-19 22:18:07,991 - trading_engine - INFO - Trading Engine initialized with 2-minute scan interval
+Patching risk manager to ignore MKRUSD position...
+Account: PA37HLPU2YVA
+Cash: $49510.42
+Portfolio Value: $52855.24
+Positions: 2
+  BTCUSD: 0.047132872 units, PnL: 0.04%
+  MKRUSD: 0.099879999 units, PnL: -17.08%
+    (MKRUSD will be ignored in circuit breaker)
+
+Running 5 market scans (2-minute intervals)...
+2026-02-19 22:18:08,245 - trading_engine - INFO - Starting Trading Engine...
+2026-02-19 22:18:08,246 - risk_manager - INFO - Daily metrics reset
+2026-02-19 22:18:08,291 - trading_engine - INFO - Account: PA37HLPU2YVA
+2026-02-19 22:18:08,291 - trading_engine - INFO - Cash: $49,510.42
+2026-02-19 22:18:08,291 - trading_engine - INFO - Portfolio Value: $52,855.24
+2026-02-19 22:18:08,292 - trading_engine - INFO - Main trading loop started
+2026-02-19 22:18:08,292 - trading_engine - INFO - Scanning 15 crypto markets...
+2026-02-19 22:18:08,292 - trading_engine - INFO - Trading Engine started successfully
+2026-02-19 22:18:08,385 - trading_engine - ERROR - Circuit breaker triggered: High portfolio concentration: 1.00
+2026-02-19 22:20:08,465 - trading_engine - WARNING - Circuit breaker triggered, trading halted
