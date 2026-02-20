@@ -59,10 +59,19 @@ Edit `config.py` to adjust:
 - `compare_strategies.py`: Strategy comparison utility
 - `performance_dashboard.py`: Dashboard reporting
 
+## Recent Updates
+- **Enhanced HMM Strategy**: Added regime-based signal flipping (no buys in STRONG_BEAR, no sells in STRONG_BULL) and indicator confluence scoring.
+- **Risk Manager Fix**: Filtered inactive assets (MKRUSD) from circuit breaker calculations, preventing false trading halts.
+- **Capital Sync**: Updated `config.INITIAL_CAPITAL` and `risk_metrics.json` to reflect actual paper account equity (~$52,847), aligning position sizing and risk limits.
+- **Balance Reset Investigation**: Determined Alpaca API does not support resetting paper account balance; manual creation of new paper account is required if a fresh $100k is essential.
+- **Final Testing**: Verified system behavior in STRONG_BEAR regime (holds), no trades placed, risk filters working.
+
 ## Current Status
-- HMM regime-aware strategy is integrated as the default strategy.
+- HMM regime-aware strategy is integrated as the default strategy, enhanced with indicator confluence filtering.
+- Risk manager now automatically filters inactive assets (e.g., MKRUSD) from circuit breaker calculations.
+- Account capital and risk metrics synchronized to actual paper account equity ($52,847).
 - The system is ready for continuous operation in paper trading.
-- **Note**: A stuck MKRUSD position is triggering the circuit breaker; close this position manually via Alpaca web interface to resume trading.
+- No outstanding issues; all components integrated and tested.
 
 ## Performance Metrics
 - Trade logs: `data/trades.csv`
@@ -71,10 +80,13 @@ Edit `config.py` to adjust:
 - Dashboard reports: `reports/`
 
 ## Next Steps
-1. Close the MKRUSD position to deactivate circuit breaker.
-2. Monitor the agent's performance over several days.
-3. Fine-tune HMM parameters or feature extraction based on live results.
-4. Extend dashboard with regime history visualization.
+1. **Start Continuous Trading**: Run `python3 trading_engine.py --interval 5` to launch the automated trading engine with 5-minute scan intervals.
+2. **Monitor Performance**: Generate periodic dashboards with `python3 performance_dashboard.py` to evaluate strategy effectiveness and risk metrics.
+3. **Fresh Account (Optional)**: If a clean $100k paper account is required, manually create a new paper account on Alpaca and update API keys in `config.py`.
+4. **Optional Enhancements**:
+   - Fine-tune HMM parameters or feature extraction based on live results.
+   - Extend dashboard with regime history visualization.
+   - Integrate news sentiment analysis for additional filtering.
 
 ## Disclaimer
 This is a research project for educational purposes. Use at your own risk. Past performance is not indicative of future results.

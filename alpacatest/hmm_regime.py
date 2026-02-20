@@ -346,6 +346,12 @@ class CryptoHMMRegimeDetector:
             norm_vol = observation[1]
             norm_momentum = observation[2]
             
+            # Guard against None, NaN, or infinite values
+            if (norm_returns is None or norm_vol is None or norm_momentum is None or
+                np.isnan(norm_returns) or np.isnan(norm_vol) or np.isnan(norm_momentum) or
+                np.isinf(norm_returns) or np.isinf(norm_vol) or np.isinf(norm_momentum)):
+                return f"REGIME_{regime_id}"
+            
             if norm_momentum > 0.5 and norm_vol < 0.3:
                 return "STRONG_BULL"
             elif norm_momentum > 0.2:
@@ -606,11 +612,33 @@ class RegimeAwareCryptoStrategy:
         Calculate a score from 0 to 1 based on indicator confluence.
         Higher score means stronger signal confirmation.
         """
+        # Create a copy with defaults for missing or None values
+        safe_indicators = {}
+        defaults = {
+            'rsi': 50,
+            'macd': 0,
+            'macd_signal': 0,
+            'bb_percent': 0.5,
+            'volume_ratio': 1.0,
+            'price': 0,
+            'sma_20': 0,
+            'momentum_pct': 0
+        }
+        for key, default in defaults.items():
+            val = indicators.get(key)
+            safe_indicators[key] = default if val is None else val
+        
+        # Ensure numeric types
+        for key in safe_indicators:
+            if not isinstance(safe_indicators[key], (int, float)):
+                safe_indicators[key] = defaults[key]
+        
+        # Use safe_indicators for calculations
         score = 0.0
         total_weights = 0
         
         # RSI score (30-70 is neutral, extremes are stronger but may be overbought/oversold)
-        rsi = indicators.get('rsi', 50)
+        rsi = safe_indicators['rsi']
         if 40 <= rsi <= 60:
             rsi_score = 0.5
         elif 30 <= rsi <= 70:
@@ -621,8 +649,8 @@ class RegimeAwareCryptoStrategy:
         total_weights += 0.2
         
         # MACD score (bullish if MACD > signal, bearish if MACD < signal)
-        macd = indicators.get('macd', 0)
-        macd_signal = indicators.get('macd_signal', 0)
+        macd = safe_indicators['macd']
+        macd_signal = safe_indicators['macd_signal']
         macd_score = 0.5
         if macd > macd_signal:
             macd_score = 0.8
@@ -632,20 +660,20 @@ class RegimeAwareCryptoStrategy:
         total_weights += 0.2
         
         # Bollinger Bands score (price near middle band is neutral, near edges is extreme)
-        bb_percent = indicators.get('bb_percent', 0.5)
+        bb_percent = safe_indicators['bb_percent']
         bb_score = 1.0 - abs(bb_percent - 0.5) * 2  # 1 at middle, 0 at edges
         score += bb_score * 0.15
         total_weights += 0.15
         
         # Volume score (above average is good)
-        volume_ratio = indicators.get('volume_ratio', 1.0)
+        volume_ratio = safe_indicators['volume_ratio']
         volume_score = min(1.0, volume_ratio)  # cap at 1.0
         score += volume_score * 0.15
         total_weights += 0.15
         
         # Trend score (price above SMA20)
-        price = indicators.get('price', 0)
-        sma_20 = indicators.get('sma_20', price)
+        price = safe_indicators['price']
+        sma_20 = safe_indicators['sma_20']
         trend_score = 0.5
         if price > sma_20:
             trend_score = 0.8
@@ -655,7 +683,7 @@ class RegimeAwareCryptoStrategy:
         total_weights += 0.2
         
         # Momentum score (positive momentum good)
-        momentum_pct = indicators.get('momentum_pct', 0)
+        momentum_pct = safe_indicators['momentum_pct']
         momentum_score = 0.5 + momentum_pct * 10  # scale
         momentum_score = max(0.1, min(0.9, momentum_score))
         score += momentum_score * 0.1
