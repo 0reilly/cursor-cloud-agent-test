@@ -1,6 +1,6 @@
 {
-  "initial_capital": 100000,
-  "current_capital": 100000,
+  "initial_capital": 100000.0,
+  "current_capital": 100000.0,
   "total_trades": 1,
   "winning_trades": 0,
   "losing_trades": 0,
@@ -11,7 +11,7 @@
   "win_rate": 0.0,
   "avg_win": 0.0,
   "avg_loss": 0.0,
-  "last_reset": "2026-02-19T22:18:08.245833",
-  "daily_resets": 3,
+  "last_reset": "2026-02-20T22:42:42.828792",
+  "daily_resets": 6,
   "circuit_breaker_triggered": false
 }

@@ -3,12 +3,12 @@ Configuration for Crypto Trading Agent
 """
 
 # Alpaca API Configuration
-ALPACA_API_KEY = "PKHQYDABNWHVD5LVB6VB5SBSYL"
-ALPACA_SECRET_KEY = "Zk9dcfKDGPLWecPW6LbTB3EYiHEZ7TxGE7zevWkSu19"
+ALPACA_API_KEY = "PKYYHLJL7XRCYZOLBTSQMQUCKK"
+ALPACA_SECRET_KEY = "7z47rf4AXsQMGzGDkqfDkBLRXE7gY4zkKqge6ho4iGc6"
 ALPACA_BASE_URL = "https://paper-api.alpaca.markets"
 
 # Trading Configuration
-INITIAL_CAPITAL = 50000  # Target starting capital
+INITIAL_CAPITAL = 100000  # Fresh paper account with $100k balance
 MAX_POSITIONS = 5  # Maximum number of simultaneous positions
 MAX_POSITION_SIZE_PCT = 0.1  # Max 10% of capital per position
 MIN_POSITION_SIZE = 100  # Minimum position size in USD
