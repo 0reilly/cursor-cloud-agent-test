@@ -1,0 +1,56 @@
+// @ts-nocheck
+import { Category } from '../types';
+
+export const categories: Category[] = [
+  {
+    id: 'cat1',
+    name: 'Social Media',
+    description: 'Platforms for social networking, content sharing, and communication',
+    icon: '👥',
+    productCount: 4, // Instagram, TikTok, Facebook, LinkedIn
+  },
+  {
+    id: 'cat2',
+    name: 'E-commerce',
+    description: 'Online shopping, marketplaces, and retail platforms',
+    icon: '🛒',
+    productCount: 2, // Amazon, eBay
+  },
+  {
+    id: 'cat3',
+    name: 'Streaming',
+    description: 'Video, music, and content subscription services',
+    icon: '🎬',
+    productCount: 2, // Netflix, Spotify
+  },
+  {
+    id: 'cat4',
+    name: 'Gaming',
+    description: 'Mobile and desktop games with microtransactions',
+    icon: '🎮',
+    productCount: 2, // Candy Crush, Fortnite
+  },
+  {
+    id: 'cat5',
+    name: 'Productivity',
+    description: 'Apps for work, organization, and task management',
+    icon: '📊',
+    productCount: 2, // Slack, Strava
+  },
+  {
+    id: 'cat6',
+    name: 'Dating',
+    description: 'Online dating and relationship platforms',
+    icon: '💘',
+    productCount: 1, // Tinder
+  },
+  {
+    id: 'cat7',
+    name: 'Finance',
+    description: 'Banking, investing, and payment apps',
+    icon: '💰',
+    productCount: 2, // Uber, Robinhood
+  },
+];
+
+export default categories;

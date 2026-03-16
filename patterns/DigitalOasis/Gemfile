@@ -1,0 +1,12 @@
+source "https://rubygems.org"
+
+# Fastlane for automation - compatible with Ruby 2.6+
+# Use latest version for App Store Connect API support
+gem 'fastlane', '>= 2.199.0'
+
+# Fastlane plugin for Expo integration
+# Note: Check if this plugin works with your Fastlane version
+# gem 'fastlane-plugin-expo', '~> 0.1'
+
+# For troubleshooting gem installation issues
+gem 'rake', '~> 13.0'

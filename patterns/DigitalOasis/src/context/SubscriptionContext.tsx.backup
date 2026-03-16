@@ -1,0 +1,163 @@
+import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
+import * as InAppPurchases from 'expo-in-app-purchases';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { Alert } from 'react-native';
+
+const SUBSCRIPTION_STATUS_KEY = '@DigitalOasis_subscription_status';
+const SUBSCRIPTION_PRODUCT_ID = 'digital_oasis_pro_yearly';
+
+type SubscriptionContextType = {
+  isSubscribed: boolean;
+  isLoading: boolean;
+  unlockPremium: () => Promise<void>;
+  restorePurchases: () => Promise<void>;
+};
+
+const SubscriptionContext = createContext<SubscriptionContextType | undefined>(undefined);
+
+export function SubscriptionProvider({ children }: { children: ReactNode }) {
+  const [isSubscribed, setIsSubscribed] = useState(false);
+  const [isLoading, setIsLoading] = useState(true);
+  const [products, setProducts] = useState<InAppPurchases.IAPItemDetails[]>([]);
+
+  // Initialize IAP and load subscription status
+  useEffect(() => {
+    async function initializeIAP() {
+      try {
+        // Connect to store
+        await InAppPurchases.connectAsync();
+        console.log('IAP connected');
+
+        // Fetch subscription product
+        const { responseCode, results } = await InAppPurchases.getProductsAsync([SUBSCRIPTION_PRODUCT_ID]);
+        if (responseCode === InAppPurchases.IAPResponseCode.OK && results) {
+          setProducts(results);
+          console.log('Products fetched:', results);
+        } else {
+          console.warn('Failed to fetch products:', responseCode);
+        }
+
+        // Set up purchase listener
+        InAppPurchases.setPurchaseListener(({ responseCode, results, errorCode }) => {
+          if (responseCode === InAppPurchases.IAPResponseCode.OK) {
+            results?.forEach(async (purchase) => {
+              if (!purchase.acknowledged) {
+                // Acknowledge purchase and finish transaction
+                await InAppPurchases.finishTransactionAsync(purchase, true);
+                console.log('Purchase acknowledged:', purchase);
+                // If purchase is our subscription product, grant subscription
+                if (purchase.productId === SUBSCRIPTION_PRODUCT_ID) {
+                  await setSubscriptionStatus(true);
+                  Alert.alert('Success', 'Thank you for subscribing to Oasis Pro!');
+                }
+              }
+            });
+          } else {
+            console.error('Purchase error:', errorCode);
+          }
+        });
+
+        // Load saved subscription status
+        await loadSubscriptionStatus();
+        
+        // Restore purchases to verify status
+        await restorePurchasesInternal();
+      } catch (error) {
+        console.error('Failed to initialize IAP:', error);
+        Alert.alert(
+          'Subscription Service Unavailable',
+          'Unable to connect to the app store. Some features may be limited.'
+        );
+      } finally {
+        setIsLoading(false);
+      }
+    }
+
+    initializeIAP();
+
+    // Cleanup on unmount
+    return () => {
+      InAppPurchases.disconnectAsync().catch(() => {});
+    };
+  }, []);
+
+  const loadSubscriptionStatus = async () => {
+    try {
+      const saved = await AsyncStorage.getItem(SUBSCRIPTION_STATUS_KEY);
+      const status = saved === 'true';
+      setIsSubscribed(status);
+    } catch (error) {
+      console.error('Failed to load subscription status:', error);
+    }
+  };
+
+  const setSubscriptionStatus = async (status: boolean) => {
+    setIsSubscribed(status);
+    await AsyncStorage.setItem(SUBSCRIPTION_STATUS_KEY, status ? 'true' : 'false');
+  };
+
+  const restorePurchasesInternal = async () => {
+    try {
+      const history = await InAppPurchases.getPurchaseHistoryAsync({ useGooglePlayCache: true });
+      if (history.responseCode === InAppPurchases.IAPResponseCode.OK && history.results) {
+        const hasSubscription = history.results.some(p => 
+          p.productId === SUBSCRIPTION_PRODUCT_ID && !p.acknowledged
+        );
+        if (hasSubscription) {
+          await setSubscriptionStatus(true);
+        }
+      }
+    } catch (error) {
+      console.error('Failed to restore purchases:', error);
+    }
+  };
+
+  const unlockPremium = async () => {
+    if (products.length === 0) {
+      Alert.alert('Not Available', 'Subscription product not loaded yet. Please try again later.');
+      return;
+    }
+    try {
+      // Purchase the subscription product
+      const purchaseResult = await InAppPurchases.purchaseItemAsync(SUBSCRIPTION_PRODUCT_ID);
+      console.log('Purchase initiated:', purchaseResult);
+      // The purchase listener will handle the result and update subscription status
+    } catch (error) {
+      console.error('Purchase failed:', error);
+      Alert.alert('Purchase Failed', 'Unable to complete purchase. Please try again.');
+    }
+  };
+
+  const restorePurchases = async () => {
+    setIsLoading(true);
+    try {
+      await restorePurchasesInternal();
+      Alert.alert('Restore Completed', 'Your purchases have been restored.');
+    } catch (error) {
+      Alert.alert('Restore Failed', 'Unable to restore purchases. Please try again later.');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const value = {
+    isSubscribed,
+    isLoading,
+    unlockPremium,
+    restorePurchases,
+  };
+
+  return (
+    <SubscriptionContext.Provider value={value}>
+      {children}
+    </SubscriptionContext.Provider>
+  );
+}
+
+export function useSubscription() {
+  const context = useContext(SubscriptionContext);
+  if (context === undefined) {
+    throw new Error('useSubscription must be used within a SubscriptionProvider');
+  }
+  return context;
+}

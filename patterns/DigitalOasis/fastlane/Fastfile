@@ -1,0 +1,321 @@
+# Fastfile for DigitalOasis - Expo-compatible iOS/Android deployment and IAP management
+
+# Global configuration
+default_platform(:ios)
+
+# Platform :ios
+platform :ios do
+  desc "Setup development environment for Expo"
+  lane :setup do
+    # Check Node version (Expo SDK 54 requires Node 18+)
+    node_version = `node --version`.strip
+    puts "Node version: #{node_version}"
+    if node_version.start_with?('v16')
+      puts "⚠️  Warning: Node 16 may cause issues with Expo SDK 54"
+      puts "   Consider upgrading to Node 18+ using nvm:"
+      puts "   nvm install 18 && nvm use 18"
+    end
+    
+    # Install npm dependencies
+    sh("npm install")
+    
+    # Install EAS CLI locally (as dev dependency)
+    puts "Installing EAS CLI..."
+    sh("npm install --save-dev eas-cli") unless File.exist?("node_modules/.bin/eas")
+    
+    # Verify EAS CLI is available
+    if File.exist?("node_modules/.bin/eas")
+      puts "✅ EAS CLI installed locally"
+    else
+      puts "⚠️  EAS CLI not installed. Try: npm install --save-dev eas-cli"
+    end
+  end
+
+  desc "Login to Expo and EAS"
+  lane :login do
+    # Login to Expo
+    sh("npx expo login")
+    # Login to EAS
+    sh("npx eas login")
+  end
+
+  desc "Initialize EAS project"
+  lane :init_eas do
+    # Initialize EAS if not already done
+    unless File.exist?("eas.json")
+      sh("npx eas init")
+      puts "Please configure eas.json for your project"
+    else
+      puts "eas.json already exists"
+    end
+  end
+
+  desc "Configure EAS for production builds"
+  lane :configure_eas do
+    # Create or update eas.json for production
+    eas_config = {
+      "cli" => {
+        "version" => ">= 3.0.0"
+      },
+      "build" => {
+        "production" => {
+          "env" => {
+            "EXPO_PUBLIC_ENABLE_IAP_SANDBOX" => "false"
+          }
+        },
+        "development" => {
+          "developmentClient" => true,
+          "distribution" => "internal"
+        },
+        "preview" => {
+          "distribution" => "internal"
+        }
+      },
+      "submit" => {
+        "production" => {}
+      }
+    }
+    
+    # Write config if eas.json doesn't exist
+    unless File.exist?("eas.json")
+      File.write("eas.json", JSON.pretty_generate(eas_config))
+      puts "Created eas.json with production configuration"
+    end
+  end
+
+  desc "List all In-App Purchases for the app (requires App Store Connect API)"
+  lane :list_iap do
+    # This requires App Store Connect API key setup
+    # First, check if API key is configured
+    unless ENV['APP_STORE_CONNECT_API_KEY_ID'] && ENV['APP_STORE_CONNECT_API_ISSUER_ID']
+      puts "Error: App Store Connect API key not configured"
+      puts "Run: bundle exec fastlane setup_api_key for setup instructions"
+      next
+    end
+    
+    # Use spaceship (built into fastlane) to list IAPs
+    require 'spaceship'
+    
+    # Initialize spaceship with API key
+    key_path = ENV['APP_STORE_CONNECT_API_KEY_PATH'] || './AuthKey_KD23YKH5K8.p8'
+    key_content = File.read(File.expand_path(key_path))
+    Spaceship::ConnectAPI.auth(
+      key_id: ENV['APP_STORE_CONNECT_API_KEY_ID'],
+      issuer_id: ENV['APP_STORE_CONNECT_API_ISSUER_ID'],
+      key: key_content
+    )
+    
+    # Get app identifier from Appfile
+    app_identifier = CredentialsManager::AppfileConfig.try_fetch_value(:app_identifier)
+    
+    # Find the app
+    app = Spaceship::ConnectAPI::App.find(app_identifier)
+    if app.nil?
+      puts "Could not find app with identifier: #{app_identifier}"
+      next
+    end
+    
+    # List IAPs
+    iaps = Spaceship::ConnectAPI::InAppPurchase.all(app_id: app.id)
+    
+    puts "Found #{iaps.count} In-App Purchases for #{app_identifier}:"
+    iaps.each do |iap|
+      puts "- #{iap.product_id}: #{iap.name} (#{iap.state})"
+    end
+  end
+
+  desc "Create the DigitalOasis Pro yearly subscription IAP"
+  lane :create_iap do
+    # Check if API key is configured
+    unless ENV['APP_STORE_CONNECT_API_KEY_ID'] && ENV['APP_STORE_CONNECT_API_ISSUER_ID']
+      puts "Error: App Store Connect API key not configured"
+      puts "Run: bundle exec fastlane setup_api_key for setup instructions"
+      next
+    end
+    
+    require 'spaceship'
+    
+    # Initialize spaceship
+    key_path = ENV['APP_STORE_CONNECT_API_KEY_PATH'] || './AuthKey_KD23YKH5K8.p8'
+    key_content = File.read(File.expand_path(key_path))
+    Spaceship::ConnectAPI.auth(
+      key_id: ENV['APP_STORE_CONNECT_API_KEY_ID'],
+      issuer_id: ENV['APP_STORE_CONNECT_API_ISSUER_ID'],
+      key: key_content
+    )
+    
+    # Get app identifier
+    app_identifier = CredentialsManager::AppfileConfig.try_fetch_value(:app_identifier)
+    app = Spaceship::ConnectAPI::App.find(app_identifier)
+    
+    if app.nil?
+      puts "Could not find app with identifier: #{app_identifier}"
+      puts "Make sure the app exists in App Store Connect"
+      next
+    end
+    
+    # Check if IAP already exists
+    existing_iap = Spaceship::ConnectAPI::InAppPurchase.find(app_id: app.id, product_id: 'digital_oasis_pro_yearly')
+    
+    if existing_iap
+      puts "In-App Purchase 'digital_oasis_pro_yearly' already exists:"
+      puts "  Name: #{existing_iap.name}"
+      puts "  State: #{existing_iap.state}"
+      next
+    end
+    
+    # Create the IAP
+    puts "Creating In-App Purchase: digital_oasis_pro_yearly"
+    
+    # Note: Creating IAPs via API requires specific permissions
+    # This might need to be done manually in App Store Connect
+    # or using Apple's App Store Connect API directly
+    
+    puts "Note: IAP creation via API is complex and may require manual setup."
+    puts "Please create the IAP manually in App Store Connect:"
+    puts "  Product ID: digital_oasis_pro_yearly"
+    puts "  Type: Auto-Renewable Subscription"
+    puts "  Price Tier: 5 ($47.99/year)"
+    puts "  Duration: 1 Year"
+    puts "  Name: Patterns Pro (Yearly)"
+    puts "  Description: Unlock unlimited detailed reports, advanced screenshot analysis, historical trends, export, priority support, and ad-free experience."
+  end
+
+  desc "Build iOS app with EAS"
+  lane :build_ios do
+    # Build with Expo EAS
+    sh("npx eas build --platform ios --profile production --non-interactive")
+  end
+
+  desc "Submit iOS build to TestFlight (using EAS Submit)"
+  lane :beta do
+    # First build with EAS
+    build_ios
+    
+    # Then submit to TestFlight using EAS Submit
+    # Note: This requires the build to complete first
+    puts "Build started with EAS. Once complete, run:"
+    puts "  npx eas submit --platform ios --latest"
+    puts "Or check status at: https://expo.dev"
+  end
+
+  desc "Submit iOS app to App Store (using EAS Submit)"
+  lane :release do
+    # Build and submit with EAS
+    sh("npx eas submit --platform ios --latest")
+  end
+
+  desc "Update app metadata on App Store Connect"
+  lane :update_metadata do
+    # Update metadata using deliver
+    deliver(
+      metadata_path: "./fastlane/metadata",
+      screenshots_path: "./fastlane/screenshots",
+      price_tier: 0, # Free app
+      skip_binary_upload: true,
+      force: true
+    )
+  end
+end
+
+# Platform :android
+platform :android do
+  desc "Build Android app with EAS"
+  lane :build_android do
+    sh("npx eas build --platform android --profile production --non-interactive")
+  end
+
+  desc "Submit Android build to Google Play Internal Testing"
+  lane :beta do
+    # Build and submit with EAS
+    sh("npx eas submit --platform android --latest")
+  end
+end
+
+# Cross-platform lanes
+desc "Build for both platforms"
+lane :build_all do
+  build_ios
+  build_android
+end
+
+desc "Setup Expo development environment"
+lane :expo_setup do
+  setup
+  init_eas
+  configure_eas
+end
+
+desc "Clean build artifacts"
+lane :clean do
+  sh("rm -rf node_modules/.cache")
+  sh("npm install")
+end
+
+desc "Setup App Store Connect API key"
+lane :setup_api_key do
+  puts "=== App Store Connect API Setup ==="
+  puts ""
+  puts "To use App Store Connect API with Fastlane:"
+  puts ""
+  puts "1. Go to App Store Connect → Users and Access → Keys"
+  puts "2. Generate a new API key with App Manager access"
+  puts "3. Download the .p8 file"
+  puts "4. Place the .p8 file in the project root"
+  puts "5. Set environment variables in your shell:"
+  puts ""
+  puts "   export APP_STORE_CONNECT_API_KEY_ID='YOUR_KEY_ID'"
+  puts "   export APP_STORE_CONNECT_API_ISSUER_ID='YOUR_ISSUER_ID'"
+  puts "   export APP_STORE_CONNECT_API_KEY_PATH='./AuthKey_YOUR_KEY_ID.p8'"
+  puts ""
+  puts "6. Update fastlane/Appfile with your app identifier"
+  puts ""
+  puts "Alternative: Use Apple ID authentication (less secure)"
+  puts "  Set apple_id in fastlane/Appfile instead"
+end
+
+desc "Test IAP connection in development"
+lane :test_iap do
+  puts "=== Testing IAP Configuration ==="
+  puts ""
+  puts "1. Ensure you have the app running in development:"
+  puts "   npm start"
+  puts ""
+  puts "2. On iOS:"
+  puts "   - Use Xcode with a development build"
+  puts "   - Sign in with Sandbox tester account in Settings"
+  puts "   - Test purchase flow in app"
+  puts ""
+  puts "3. On Android:"
+  puts "   - Build with development profile"
+  puts "   - Use license testers in Google Play Console"
+  puts ""
+  puts "4. Verify subscription context works:"
+  puts "   - Check isSubscribed state updates correctly"
+  puts "   - Test restore purchases functionality"
+  puts "   - Verify feature gating works"
+end
+
+desc "Manage App Store metadata with EAS"
+lane :eas_metadata do
+  puts "=== EAS Metadata Management ==="
+  puts ""
+  puts "EAS Metadata allows managing app store metadata from CLI:"
+  puts ""
+  puts "1. Initialize metadata configuration:"
+  puts "   npx eas metadata:init"
+  puts ""
+  puts "2. Pull existing metadata from app stores:"
+  puts "   npx eas metadata:pull"
+  puts ""
+  puts "3. Update local metadata files in store/ directory"
+  puts ""
+  puts "4. Push changes to app stores:"
+  puts "   npx eas metadata:push"
+  puts ""
+  puts "5. Validate metadata:"
+  puts "   npx eas metadata:lint"
+  puts ""
+  puts "Note: Requires EAS CLI installed and authenticated"
+  puts "      Run 'bundle exec fastlane setup' first"
+end

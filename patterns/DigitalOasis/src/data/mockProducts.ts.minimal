@@ -1,0 +1,88 @@
+// @ts-nocheck
+import { DigitalProduct } from '../types';
+import darkPatterns from './mockDarkPatterns';
+import sideEffects from './mockSideEffects';
+import studies from './mockStudies';
+
+// Helper to find studies by affected products
+const getStudiesForProduct = (productName: string) => {
+  return studies.filter(study => 
+    study.productsAffected.some(p => 
+      p.toLowerCase().includes(productName.toLowerCase()) ||
+      productName.toLowerCase().includes(p.toLowerCase())
+    )
+  );
+};
+
+export const products: DigitalProduct[] = [
+  {
+    id: 'product1',
+    name: 'Instagram',
+    category: 'social_media',
+    description: 'Photo and video sharing social networking service owned by Meta Platforms.',
+    darkPatterns: [
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp5')!,
+        prevalence: 'ubiquitous',
+        description: 'Shows fake activity notifications to create FOMO.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp8')!,
+        prevalence: 'common',
+        description: 'Uses guilt-inducing language when users decline notifications or features.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp6')!,
+        prevalence: 'common',
+        description: 'Makes account deletion difficult and requires navigating multiple screens.'
+      }
+    ],
+    sideEffects: [
+      sideEffects.find(se => se.id === 'se1')!,
+      sideEffects.find(se => se.id === 'se2')!,
+      sideEffects.find(se => se.id === 'se6')!,
+      sideEffects.find(se => se.id === 'se7')!
+    ],
+    transparencyScore: 20,
+    icon: '📸',
+    studies: getStudiesForProduct('Instagram'),
+    tags: ['social', 'photos', 'meta', 'addictive']
+  },
+  {
+    id: 'product2',
+    name: 'Amazon',
+    category: 'ecommerce',
+    description: 'Multinational technology company focusing on e-commerce, cloud computing, digital streaming, and artificial intelligence.',
+    darkPatterns: [
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp2')!,
+        prevalence: 'common',
+        description: 'Hidden costs like Prime subscription auto-renewal.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp3')!,
+        prevalence: 'ubiquitous',
+        description: 'False urgency with countdown timers on deals.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp4')!,
+        prevalence: 'common',
+        description: 'Low stock notifications to pressure purchases.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp6')!,
+        prevalence: 'common',
+        description: 'Difficult cancellation process for Prime membership.'
+      }
+    ],
+    sideEffects: [
+      sideEffects.find(se => se.id === 'se5')!,
+      sideEffects.find(se => se.id === 'se8')!,
+      sideEffects.find(se => se.id === 'se4')!
+    ],
+    transparencyScore: 45,
+    icon: '📦',
+    studies: getStudiesForProduct('Amazon'),
+    tags: ['shopping', 'prime', 'marketplace', 'subscription']
+  }
+];

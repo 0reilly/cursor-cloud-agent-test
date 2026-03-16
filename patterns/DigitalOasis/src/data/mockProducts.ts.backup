@@ -1,0 +1,3169 @@
+// @ts-nocheck
+import { DigitalProduct } from '../types';
+import darkPatterns from './mockDarkPatterns';
+import sideEffects from './mockSideEffects';
+import studies from './mockStudies';
+
+// Helper to find studies by affected products
+const getStudiesForProduct = (productName: string) => {
+  return studies.filter(study => 
+    study.productsAffected.some(p => 
+      p.toLowerCase().includes(productName.toLowerCase()) ||
+      productName.toLowerCase().includes(p.toLowerCase())
+    )
+  );
+};
+
+export const products: DigitalProduct[] = [
+  {
+    id: 'product1',
+    name: 'Instagram',
+    category: 'social_media',
+    description: 'Photo and video sharing social networking service owned by Meta Platforms.',
+    darkPatterns: [
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp5')!,
+        prevalence: 'ubiquitous',
+        description: 'Shows fake activity notifications to create FOMO.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp8')!,
+        prevalence: 'common',
+        description: 'Uses guilt-inducing language when users decline notifications or features.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp6')!,
+        prevalence: 'common',
+        description: 'Makes account deletion difficult and requires navigating multiple screens.'
+      }
+    ],
+    sideEffects: [
+      sideEffects.find(se => se.id === 'se1')!,
+      sideEffects.find(se => se.id === 'se2')!,
+      sideEffects.find(se => se.id === 'se6')!,
+      sideEffects.find(se => se.id === 'se7')!
+    ],
+    transparencyScore: 20,
+    icon: '📸',
+    studies: getStudiesForProduct('Instagram'),
+    tags: ['social', 'photos', 'meta', 'addictive']
+  },
+  {
+    id: 'product2',
+    name: 'Amazon',
+    category: 'ecommerce',
+    description: 'Multinational technology company focusing on e-commerce, cloud computing, digital streaming, and artificial intelligence.',
+    darkPatterns: [
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp2')!,
+        prevalence: 'common',
+        description: 'Hidden costs like Prime subscription auto-renewal.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp3')!,
+        prevalence: 'ubiquitous',
+        description: 'False urgency with countdown timers on deals.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp4')!,
+        prevalence: 'common',
+        description: 'Low stock notifications to pressure purchases.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp6')!,
+        prevalence: 'common',
+        description: 'Difficult cancellation process for Prime membership.'
+      }
+    ],
+    sideEffects: [
+      sideEffects.find(se => se.id === 'se5')!,
+      sideEffects.find(se => se.id === 'se8')!,
+      sideEffects.find(se => se.id === 'se4')!
+    ],
+    transparencyScore: 45,
+    icon: '📦',
+    studies: getStudiesForProduct('Amazon'),
+    tags: ['shopping', 'prime', 'marketplace', 'subscription']
+  },
+  {
+    id: 'product3',
+    name: 'TikTok',
+    category: 'social_media',
+    description: 'Video-sharing social networking service owned by ByteDance.',
+    darkPatterns: [
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp7')!,
+        prevalence: 'ubiquitous',
+        description: 'Infinite scroll and auto-play creates addictive usage patterns.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp5')!,
+        prevalence: 'common',
+        description: 'Notifications about trending videos create FOMO.'
+      }
+    ],
+    sideEffects: [
+      sideEffects.find(se => se.id === 'se7')!,
+      sideEffects.find(se => se.id === 'se2')!,
+      sideEffects.find(se => se.id === 'se3')!,
+      sideEffects.find(se => se.id === 'se1')!
+    ],
+    transparencyScore: 15,
+    icon: '🎵',
+    studies: getStudiesForProduct('TikTok'),
+    tags: ['shortform', 'video', 'addictive', 'algorithm']
+  },
+  {
+    id: 'product4',
+    name: 'Netflix',
+    category: 'streaming',
+    description: 'Subscription streaming service offering films and television series.',
+    darkPatterns: [
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp1')!,
+        prevalence: 'common',
+        description: 'Free trial automatically converts to paid subscription.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp6')!,
+        prevalence: 'common',
+        description: 'Complex cancellation process requiring multiple steps.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp7')!,
+        prevalence: 'ubiquitous',
+        description: 'Auto-play next episode forces continued watching.'
+      }
+    ],
+    sideEffects: [
+      sideEffects.find(se => se.id === 'se2')!,
+      sideEffects.find(se => se.id === 'se8')!,
+      sideEffects.find(se => se.id === 'se7')!
+    ],
+    transparencyScore: 65,
+    icon: '🎬',
+    studies: getStudiesForProduct('Netflix'),
+    tags: ['streaming', 'tv', 'movies', 'subscription']
+  },
+  {
+    id: 'product5',
+    name: 'Uber',
+    category: 'finance',
+    description: 'Mobility as a service provider, food delivery, and freight transportation.',
+    darkPatterns: [
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp2')!,
+        prevalence: 'common',
+        description: 'Surge pricing not clearly disclosed upfront.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp3')!,
+        prevalence: 'common',
+        description: 'Urgent messages about drivers waiting.'
+      }
+    ],
+    sideEffects: [
+      sideEffects.find(se => se.id === 'se5')!,
+      sideEffects.find(se => se.id === 'se4')!
+    ],
+    transparencyScore: 60,
+    icon: '🚗',
+    studies: getStudiesForProduct('Uber'),
+    tags: ['ride', 'delivery', 'gig', 'transport']
+  },
+  {
+    id: 'product6',
+    name: 'Candy Crush Saga',
+    category: 'gaming',
+    description: 'Free-to-play tile-matching video game released by King.',
+    darkPatterns: [
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp7')!,
+        prevalence: 'ubiquitous',
+        description: 'Forces in-app purchases to progress.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp3')!,
+        prevalence: 'common',
+        description: 'Countdown timers on lives create urgency.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp4')!,
+        prevalence: 'common',
+        description: 'Limited lives create artificial scarcity.'
+      }
+    ],
+    sideEffects: [
+      sideEffects.find(se => se.id === 'se7')!,
+      sideEffects.find(se => se.id === 'se5')!,
+      sideEffects.find(se => se.id === 'se1')!
+    ],
+    transparencyScore: 25,
+    icon: '🍬',
+    studies: getStudiesForProduct('Candy Crush'),
+    tags: ['mobile', 'puzzle', 'freemium', 'addictive']
+  },
+  {
+    id: 'product7',
+    name: 'Tinder',
+    category: 'dating',
+    description: 'Geosocial networking and online dating application.',
+    darkPatterns: [
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp5')!,
+        prevalence: 'ubiquitous',
+        description: 'Fake activity notifications about profile views.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp8')!,
+        prevalence: 'common',
+        description: 'Shames users for not upgrading to premium features.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp7')!,
+        prevalence: 'common',
+        description: 'Forces purchase of premium to see likes.'
+      }
+    ],
+    sideEffects: [
+      sideEffects.find(se => se.id === 'se1')!,
+      sideEffects.find(se => se.id === 'se6')!,
+      sideEffects.find(se => se.id === 'se7')!
+    ],
+    transparencyScore: 35,
+    icon: '💘',
+    studies: getStudiesForProduct('Tinder'),
+    tags: ['dating', 'swipe', 'premium', 'social']
+  },
+  {
+    id: 'product8',
+    name: 'LinkedIn',
+    category: 'social_media',
+    description: 'Business and employment-oriented social media platform.',
+    darkPatterns: [
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp8')!,
+        prevalence: 'common',
+        description: 'Uses guilt-inducing language to pressure users into premium subscriptions.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp5')!,
+        prevalence: 'common',
+        description: 'Notifications about profile views create professional anxiety.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp8')!,
+        prevalence: 'rare',
+        description: 'Confirmshaming when declining premium features.'
+      }
+    ],
+    sideEffects: [
+      sideEffects.find(se => se.id === 'se1')!,
+      sideEffects.find(se => se.id === 'se3')!,
+      sideEffects.find(se => se.id === 'se8')!
+    ],
+    transparencyScore: 55,
+    icon: '💼',
+    studies: getStudiesForProduct('LinkedIn'),
+    tags: ['professional', 'networking', 'career', 'business']
+  },
+  {
+    id: 'product9',
+    name: 'Spotify',
+    category: 'streaming',
+    description: 'Audio streaming and media services provider.',
+    darkPatterns: [
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp1')!,
+        prevalence: 'common',
+        description: 'Free trial automatically converts to paid subscription.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp6')!,
+        prevalence: 'common',
+        description: 'Complex cancellation process for premium.'
+      }
+    ],
+    sideEffects: [
+      sideEffects.find(se => se.id === 'se5')!,
+      sideEffects.find(se => se.id === 'se7')!
+    ],
+    transparencyScore: 70,
+    icon: '🎧',
+    studies: getStudiesForProduct('Spotify'),
+    tags: ['music', 'audio', 'subscription', 'streaming']
+  },
+  {
+    id: 'product10',
+    name: 'Facebook',
+    category: 'social_media',
+    description: 'Online social media and social networking service owned by Meta Platforms.',
+    darkPatterns: [
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp5')!,
+        prevalence: 'ubiquitous',
+        description: 'Notifications designed to create FOMO.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp7')!,
+        prevalence: 'common',
+        description: 'Infinite scroll and auto-play videos.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp4')!,
+        prevalence: 'common',
+        description: 'Urgent notifications about friend activity.'
+      }
+    ],
+    sideEffects: [
+      sideEffects.find(se => se.id === 'se1')!,
+      sideEffects.find(se => se.id === 'se4')!,
+      sideEffects.find(se => se.id === 'se6')!,
+      sideEffects.find(se => se.id === 'se7')!
+    ],
+    transparencyScore: 25,
+    icon: '👥',
+    studies: getStudiesForProduct('Facebook'),
+    tags: ['social', 'meta', 'networking', 'newsfeed']
+  },
+  {
+    id: 'product11',
+    name: 'Slack',
+    category: 'productivity',
+    description: 'Business communication platform with channels, direct messaging, and integrations.',
+    darkPatterns: [
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp7')!,
+        prevalence: 'common',
+        description: 'Forces constant availability through notifications.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp4')!,
+        prevalence: 'common',
+        description: 'Urgent notification badges create workplace anxiety.'
+      }
+    ],
+    sideEffects: [
+      sideEffects.find(se => se.id === 'se1')!,
+      sideEffects.find(se => se.id === 'se3')!,
+      sideEffects.find(se => se.id === 'se8')!
+    ],
+    transparencyScore: 75,
+    icon: '💬',
+    studies: getStudiesForProduct('Slack'),
+    tags: ['work', 'communication', 'teams', 'notifications']
+  },
+  {
+    id: 'product12',
+    name: 'Strava',
+    category: 'productivity',
+    description: 'Social fitness network that tracks athletic activity via GPS.',
+    darkPatterns: [
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp5')!,
+        prevalence: 'common',
+        description: 'Social comparison through leaderboards and achievements.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp8')!,
+        prevalence: 'common',
+        description: 'Shames athletes for not using premium features.'
+      }
+    ],
+    sideEffects: [
+      sideEffects.find(se => se.id === 'se1')!,
+      sideEffects.find(se => se.id === 'se7')!
+    ],
+    transparencyScore: 80,
+    icon: '🏃‍♂️',
+    studies: getStudiesForProduct('Strava'),
+    tags: ['fitness', 'tracking', 'social', 'athletics']
+  },
+  {
+    id: 'product13',
+    name: 'eBay',
+    category: 'ecommerce',
+    description: 'Multinational e-commerce corporation facilitating consumer-to-consumer and business-to-consumer sales.',
+    darkPatterns: [
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp3')!,
+        prevalence: 'ubiquitous',
+        description: 'Auction countdown timers create bidding urgency.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp2')!,
+        prevalence: 'common',
+        description: 'Hidden seller fees and shipping costs.'
+      }
+    ],
+    sideEffects: [
+      sideEffects.find(se => se.id === 'se5')!,
+      sideEffects.find(se => se.id === 'se8')!
+    ],
+    transparencyScore: 50,
+    icon: '🏷️',
+    studies: getStudiesForProduct('eBay'),
+    tags: ['auction', 'marketplace', 'secondhand', 'bidding']
+  },
+  {
+    id: 'product14',
+    name: 'Fortnite',
+    category: 'gaming',
+    description: 'Online video game developed by Epic Games with battle royale gameplay and in-game purchases.',
+    darkPatterns: [
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp7')!,
+        prevalence: 'ubiquitous',
+        description: 'Forces in-game purchases for cosmetic items and battle passes.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp4')!,
+        prevalence: 'common',
+        description: 'Limited-time items create artificial scarcity.'
+      }
+    ],
+    sideEffects: [
+      sideEffects.find(se => se.id === 'se7')!,
+      sideEffects.find(se => se.id === 'se5')!,
+      sideEffects.find(se => se.id === 'se2')!
+    ],
+    transparencyScore: 30,
+    icon: '🛡️',
+    studies: getStudiesForProduct('Fortnite'),
+    tags: ['battle', 'royale', 'cosmetic', 'addictive']
+  },
+  {
+    id: 'product15',
+    name: 'Robinhood',
+    category: 'finance',
+    description: 'Financial services company known for commission-free trades of stocks, ETFs, and cryptocurrencies.',
+    darkPatterns: [
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp9')!,
+        prevalence: 'common',
+        description: 'Gamified trading interface encourages risky behavior.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp7')!,
+        prevalence: 'common',
+        description: 'Forces engagement through notification and confetti effects.'
+      }
+    ],
+    sideEffects: [
+      sideEffects.find(se => se.id === 'se5')!,
+      sideEffects.find(se => se.id === 'se1')!,
+      sideEffects.find(se => se.id === 'se7')!
+    ],
+    transparencyScore: 40,
+    icon: '📈',
+    studies: getStudiesForProduct('Robinhood'),
+    tags: ['investing', 'trading', 'stocks', 'gamified']
+  },
+{
+    id: 'product16',
+    name: 'Twitter',
+    category: 'social_media',
+    description: 'Social networking service for short messages called tweets.',
+    darkPatterns: [
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp5')!,
+        prevalence: 'common',
+        description: 'Fake activity notifications create FOMO.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp7')!,
+        prevalence: 'ubiquitous',
+        description: 'Infinite scroll encourages addictive usage.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp8')!,
+        prevalence: 'rare',
+        description: 'Confirmshaming when declining notifications.'
+      },
+    ],
+    sideEffects: [
+      sideEffects.find(se => se.id === 'se1')!,
+      sideEffects.find(se => se.id === 'se2')!,
+      sideEffects.find(se => se.id === 'se7')!,
+    ],
+    transparencyScore: 20,
+    icon: '🐦',
+    studies: getStudiesForProduct('Twitter'),
+    tags: ["social","networking","communication"]
+  },
+  {
+    id: 'product17',
+    name: 'Snapchat',
+    category: 'social_media',
+    description: 'Multimedia messaging app with disappearing content.',
+    darkPatterns: [
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp5')!,
+        prevalence: 'common',
+        description: 'Fake activity notifications create FOMO.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp7')!,
+        prevalence: 'ubiquitous',
+        description: 'Infinite scroll encourages addictive usage.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp8')!,
+        prevalence: 'rare',
+        description: 'Confirmshaming when declining notifications.'
+      },
+    ],
+    sideEffects: [
+      sideEffects.find(se => se.id === 'se1')!,
+      sideEffects.find(se => se.id === 'se2')!,
+      sideEffects.find(se => se.id === 'se7')!,
+    ],
+    transparencyScore: 20,
+    icon: '👻',
+    studies: getStudiesForProduct('Snapchat'),
+    tags: ["social","networking","communication"]
+  },
+  {
+    id: 'product18',
+    name: 'Pinterest',
+    category: 'social_media',
+    description: 'Image sharing and social media service for saving and discovering information.',
+    darkPatterns: [
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp5')!,
+        prevalence: 'common',
+        description: 'Fake activity notifications create FOMO.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp7')!,
+        prevalence: 'ubiquitous',
+        description: 'Infinite scroll encourages addictive usage.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp8')!,
+        prevalence: 'rare',
+        description: 'Confirmshaming when declining notifications.'
+      },
+    ],
+    sideEffects: [
+      sideEffects.find(se => se.id === 'se1')!,
+      sideEffects.find(se => se.id === 'se2')!,
+      sideEffects.find(se => se.id === 'se7')!,
+    ],
+    transparencyScore: 20,
+    icon: '📌',
+    studies: getStudiesForProduct('Pinterest'),
+    tags: ["social","networking","communication"]
+  },
+  {
+    id: 'product19',
+    name: 'Reddit',
+    category: 'social_media',
+    description: 'Social news aggregation, web content rating, and discussion website.',
+    darkPatterns: [
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp5')!,
+        prevalence: 'common',
+        description: 'Fake activity notifications create FOMO.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp7')!,
+        prevalence: 'ubiquitous',
+        description: 'Infinite scroll encourages addictive usage.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp8')!,
+        prevalence: 'rare',
+        description: 'Confirmshaming when declining notifications.'
+      },
+    ],
+    sideEffects: [
+      sideEffects.find(se => se.id === 'se1')!,
+      sideEffects.find(se => se.id === 'se2')!,
+      sideEffects.find(se => se.id === 'se7')!,
+    ],
+    transparencyScore: 20,
+    icon: '🤖',
+    studies: getStudiesForProduct('Reddit'),
+    tags: ["social","networking","communication"]
+  },
+  {
+    id: 'product20',
+    name: 'WhatsApp',
+    category: 'social_media',
+    description: 'Cross-platform centralized instant messaging and voice-over-IP service.',
+    darkPatterns: [
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp5')!,
+        prevalence: 'common',
+        description: 'Fake activity notifications create FOMO.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp7')!,
+        prevalence: 'ubiquitous',
+        description: 'Infinite scroll encourages addictive usage.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp8')!,
+        prevalence: 'rare',
+        description: 'Confirmshaming when declining notifications.'
+      },
+    ],
+    sideEffects: [
+      sideEffects.find(se => se.id === 'se1')!,
+      sideEffects.find(se => se.id === 'se2')!,
+      sideEffects.find(se => se.id === 'se7')!,
+    ],
+    transparencyScore: 20,
+    icon: '💬',
+    studies: getStudiesForProduct('WhatsApp'),
+    tags: ["social","networking","communication"]
+  },
+  {
+    id: 'product21',
+    name: 'Discord',
+    category: 'social_media',
+    description: 'Voice, video and text communication service for communities.',
+    darkPatterns: [
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp5')!,
+        prevalence: 'common',
+        description: 'Fake activity notifications create FOMO.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp7')!,
+        prevalence: 'ubiquitous',
+        description: 'Infinite scroll encourages addictive usage.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp8')!,
+        prevalence: 'rare',
+        description: 'Confirmshaming when declining notifications.'
+      },
+    ],
+    sideEffects: [
+      sideEffects.find(se => se.id === 'se1')!,
+      sideEffects.find(se => se.id === 'se2')!,
+      sideEffects.find(se => se.id === 'se7')!,
+    ],
+    transparencyScore: 20,
+    icon: '🎮',
+    studies: getStudiesForProduct('Discord'),
+    tags: ["social","networking","communication"]
+  },
+  {
+    id: 'product22',
+    name: 'Telegram',
+    category: 'social_media',
+    description: 'Cloud-based instant messaging and voice-over-IP service.',
+    darkPatterns: [
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp5')!,
+        prevalence: 'common',
+        description: 'Fake activity notifications create FOMO.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp7')!,
+        prevalence: 'ubiquitous',
+        description: 'Infinite scroll encourages addictive usage.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp8')!,
+        prevalence: 'rare',
+        description: 'Confirmshaming when declining notifications.'
+      },
+    ],
+    sideEffects: [
+      sideEffects.find(se => se.id === 'se1')!,
+      sideEffects.find(se => se.id === 'se2')!,
+      sideEffects.find(se => se.id === 'se7')!,
+    ],
+    transparencyScore: 20,
+    icon: '📨',
+    studies: getStudiesForProduct('Telegram'),
+    tags: ["social","networking","communication"]
+  },
+  {
+    id: 'product23',
+    name: 'Signal',
+    category: 'social_media',
+    description: 'Cross-platform encrypted messaging service.',
+    darkPatterns: [
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp5')!,
+        prevalence: 'common',
+        description: 'Fake activity notifications create FOMO.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp7')!,
+        prevalence: 'ubiquitous',
+        description: 'Infinite scroll encourages addictive usage.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp8')!,
+        prevalence: 'rare',
+        description: 'Confirmshaming when declining notifications.'
+      },
+    ],
+    sideEffects: [
+      sideEffects.find(se => se.id === 'se1')!,
+      sideEffects.find(se => se.id === 'se2')!,
+      sideEffects.find(se => se.id === 'se7')!,
+    ],
+    transparencyScore: 20,
+    icon: '🔒',
+    studies: getStudiesForProduct('Signal'),
+    tags: ["social","networking","communication"]
+  },
+  {
+    id: 'product24',
+    name: 'WeChat',
+    category: 'social_media',
+    description: 'Chinese multi-purpose messaging, social media and mobile payment app.',
+    darkPatterns: [
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp5')!,
+        prevalence: 'common',
+        description: 'Fake activity notifications create FOMO.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp7')!,
+        prevalence: 'ubiquitous',
+        description: 'Infinite scroll encourages addictive usage.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp8')!,
+        prevalence: 'rare',
+        description: 'Confirmshaming when declining notifications.'
+      },
+    ],
+    sideEffects: [
+      sideEffects.find(se => se.id === 'se1')!,
+      sideEffects.find(se => se.id === 'se2')!,
+      sideEffects.find(se => se.id === 'se7')!,
+    ],
+    transparencyScore: 20,
+    icon: '👥',
+    studies: getStudiesForProduct('WeChat'),
+    tags: ["social","networking","communication"]
+  },
+  {
+    id: 'product25',
+    name: 'Clubhouse',
+    category: 'social_media',
+    description: 'Drop-in audio chat app for conversations.',
+    darkPatterns: [
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp5')!,
+        prevalence: 'common',
+        description: 'Fake activity notifications create FOMO.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp7')!,
+        prevalence: 'ubiquitous',
+        description: 'Infinite scroll encourages addictive usage.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp8')!,
+        prevalence: 'rare',
+        description: 'Confirmshaming when declining notifications.'
+      },
+    ],
+    sideEffects: [
+      sideEffects.find(se => se.id === 'se1')!,
+      sideEffects.find(se => se.id === 'se2')!,
+      sideEffects.find(se => se.id === 'se7')!,
+    ],
+    transparencyScore: 20,
+    icon: '🎤',
+    studies: getStudiesForProduct('Clubhouse'),
+    tags: ["social","networking","communication"]
+  },
+  {
+    id: 'product26',
+    name: 'Threads',
+    category: 'social_media',
+    description: 'Text-based conversation app from Meta.',
+    darkPatterns: [
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp5')!,
+        prevalence: 'common',
+        description: 'Fake activity notifications create FOMO.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp7')!,
+        prevalence: 'ubiquitous',
+        description: 'Infinite scroll encourages addictive usage.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp8')!,
+        prevalence: 'rare',
+        description: 'Confirmshaming when declining notifications.'
+      },
+    ],
+    sideEffects: [
+      sideEffects.find(se => se.id === 'se1')!,
+      sideEffects.find(se => se.id === 'se2')!,
+      sideEffects.find(se => se.id === 'se7')!,
+    ],
+    transparencyScore: 20,
+    icon: '🧵',
+    studies: getStudiesForProduct('Threads'),
+    tags: ["social","networking","communication"]
+  },
+  {
+    id: 'product27',
+    name: 'Bluesky',
+    category: 'social_media',
+    description: 'Decentralized social network from former Twitter team.',
+    darkPatterns: [
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp5')!,
+        prevalence: 'common',
+        description: 'Fake activity notifications create FOMO.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp7')!,
+        prevalence: 'ubiquitous',
+        description: 'Infinite scroll encourages addictive usage.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp8')!,
+        prevalence: 'rare',
+        description: 'Confirmshaming when declining notifications.'
+      },
+    ],
+    sideEffects: [
+      sideEffects.find(se => se.id === 'se1')!,
+      sideEffects.find(se => se.id === 'se2')!,
+      sideEffects.find(se => se.id === 'se7')!,
+    ],
+    transparencyScore: 20,
+    icon: '☁️',
+    studies: getStudiesForProduct('Bluesky'),
+    tags: ["social","networking","communication"]
+  },
+  {
+    id: 'product28',
+    name: 'Mastodon',
+    category: 'social_media',
+    description: 'Decentralized social networking platform.',
+    darkPatterns: [
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp5')!,
+        prevalence: 'common',
+        description: 'Fake activity notifications create FOMO.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp7')!,
+        prevalence: 'ubiquitous',
+        description: 'Infinite scroll encourages addictive usage.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp8')!,
+        prevalence: 'rare',
+        description: 'Confirmshaming when declining notifications.'
+      },
+    ],
+    sideEffects: [
+      sideEffects.find(se => se.id === 'se1')!,
+      sideEffects.find(se => se.id === 'se2')!,
+      sideEffects.find(se => se.id === 'se7')!,
+    ],
+    transparencyScore: 20,
+    icon: '🐘',
+    studies: getStudiesForProduct('Mastodon'),
+    tags: ["social","networking","communication"]
+  },
+  {
+    id: 'product29',
+    name: 'Tumblr',
+    category: 'social_media',
+    description: 'Microblogging and social networking website.',
+    darkPatterns: [
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp5')!,
+        prevalence: 'common',
+        description: 'Fake activity notifications create FOMO.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp7')!,
+        prevalence: 'ubiquitous',
+        description: 'Infinite scroll encourages addictive usage.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp8')!,
+        prevalence: 'rare',
+        description: 'Confirmshaming when declining notifications.'
+      },
+    ],
+    sideEffects: [
+      sideEffects.find(se => se.id === 'se1')!,
+      sideEffects.find(se => se.id === 'se2')!,
+      sideEffects.find(se => se.id === 'se7')!,
+    ],
+    transparencyScore: 20,
+    icon: '📱',
+    studies: getStudiesForProduct('Tumblr'),
+    tags: ["social","networking","communication"]
+  },
+  {
+    id: 'product30',
+    name: 'VK',
+    category: 'social_media',
+    description: 'Russian online social media and social networking service.',
+    darkPatterns: [
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp5')!,
+        prevalence: 'common',
+        description: 'Fake activity notifications create FOMO.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp7')!,
+        prevalence: 'ubiquitous',
+        description: 'Infinite scroll encourages addictive usage.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp8')!,
+        prevalence: 'rare',
+        description: 'Confirmshaming when declining notifications.'
+      },
+    ],
+    sideEffects: [
+      sideEffects.find(se => se.id === 'se1')!,
+      sideEffects.find(se => se.id === 'se2')!,
+      sideEffects.find(se => se.id === 'se7')!,
+    ],
+    transparencyScore: 20,
+    icon: '🔷',
+    studies: getStudiesForProduct('VK'),
+    tags: ["social","networking","communication"]
+  },
+  {
+    id: 'product31',
+    name: 'QQ',
+    category: 'social_media',
+    description: 'Chinese instant messaging software service.',
+    darkPatterns: [
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp5')!,
+        prevalence: 'common',
+        description: 'Fake activity notifications create FOMO.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp7')!,
+        prevalence: 'ubiquitous',
+        description: 'Infinite scroll encourages addictive usage.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp8')!,
+        prevalence: 'rare',
+        description: 'Confirmshaming when declining notifications.'
+      },
+    ],
+    sideEffects: [
+      sideEffects.find(se => se.id === 'se1')!,
+      sideEffects.find(se => se.id === 'se2')!,
+      sideEffects.find(se => se.id === 'se7')!,
+    ],
+    transparencyScore: 20,
+    icon: '💎',
+    studies: getStudiesForProduct('QQ'),
+    tags: ["social","networking","communication"]
+  },
+  {
+    id: 'product32',
+    name: 'Sina Weibo',
+    category: 'social_media',
+    description: 'Chinese microblogging website.',
+    darkPatterns: [
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp5')!,
+        prevalence: 'common',
+        description: 'Fake activity notifications create FOMO.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp7')!,
+        prevalence: 'ubiquitous',
+        description: 'Infinite scroll encourages addictive usage.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp8')!,
+        prevalence: 'rare',
+        description: 'Confirmshaming when declining notifications.'
+      },
+    ],
+    sideEffects: [
+      sideEffects.find(se => se.id === 'se1')!,
+      sideEffects.find(se => se.id === 'se2')!,
+      sideEffects.find(se => se.id === 'se7')!,
+    ],
+    transparencyScore: 20,
+    icon: '🌐',
+    studies: getStudiesForProduct('Sina Weibo'),
+    tags: ["social","networking","communication"]
+  },
+  {
+    id: 'product33',
+    name: 'Line',
+    category: 'social_media',
+    description: 'Japanese messaging app.',
+    darkPatterns: [
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp5')!,
+        prevalence: 'common',
+        description: 'Fake activity notifications create FOMO.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp7')!,
+        prevalence: 'ubiquitous',
+        description: 'Infinite scroll encourages addictive usage.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp8')!,
+        prevalence: 'rare',
+        description: 'Confirmshaming when declining notifications.'
+      },
+    ],
+    sideEffects: [
+      sideEffects.find(se => se.id === 'se1')!,
+      sideEffects.find(se => se.id === 'se2')!,
+      sideEffects.find(se => se.id === 'se7')!,
+    ],
+    transparencyScore: 20,
+    icon: '📲',
+    studies: getStudiesForProduct('Line'),
+    tags: ["social","networking","communication"]
+  },
+  {
+    id: 'product34',
+    name: 'Viber',
+    category: 'social_media',
+    description: 'Cross-platform voice over IP and instant messaging app.',
+    darkPatterns: [
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp5')!,
+        prevalence: 'common',
+        description: 'Fake activity notifications create FOMO.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp7')!,
+        prevalence: 'ubiquitous',
+        description: 'Infinite scroll encourages addictive usage.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp8')!,
+        prevalence: 'rare',
+        description: 'Confirmshaming when declining notifications.'
+      },
+    ],
+    sideEffects: [
+      sideEffects.find(se => se.id === 'se1')!,
+      sideEffects.find(se => se.id === 'se2')!,
+      sideEffects.find(se => se.id === 'se7')!,
+    ],
+    transparencyScore: 20,
+    icon: '📞',
+    studies: getStudiesForProduct('Viber'),
+    tags: ["social","networking","communication"]
+  },
+  {
+    id: 'product35',
+    name: 'Skype',
+    category: 'social_media',
+    description: 'Telecommunications application for video calls.',
+    darkPatterns: [
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp5')!,
+        prevalence: 'common',
+        description: 'Fake activity notifications create FOMO.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp7')!,
+        prevalence: 'ubiquitous',
+        description: 'Infinite scroll encourages addictive usage.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp8')!,
+        prevalence: 'rare',
+        description: 'Confirmshaming when declining notifications.'
+      },
+    ],
+    sideEffects: [
+      sideEffects.find(se => se.id === 'se1')!,
+      sideEffects.find(se => se.id === 'se2')!,
+      sideEffects.find(se => se.id === 'se7')!,
+    ],
+    transparencyScore: 20,
+    icon: '📹',
+    studies: getStudiesForProduct('Skype'),
+    tags: ["social","networking","communication"]
+  },
+  {
+    id: 'product36',
+    name: 'Alibaba',
+    category: 'ecommerce',
+    description: 'Chinese multinational technology company specializing in e-commerce.',
+    darkPatterns: [
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp3')!,
+        prevalence: 'common',
+        description: 'Countdown timers create false urgency.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp4')!,
+        prevalence: 'common',
+        description: 'Low stock messages pressure purchases.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp2')!,
+        prevalence: 'common',
+        description: 'Hidden costs in checkout.'
+      },
+    ],
+    sideEffects: [
+      sideEffects.find(se => se.id === 'se5')!,
+      sideEffects.find(se => se.id === 'se8')!,
+    ],
+    transparencyScore: 45,
+    icon: '🏮',
+    studies: getStudiesForProduct('Alibaba'),
+    tags: ["shopping","retail","marketplace"]
+  },
+  {
+    id: 'product37',
+    name: 'Shopify',
+    category: 'ecommerce',
+    description: 'E-commerce platform for online stores and retail point-of-sale systems.',
+    darkPatterns: [
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp3')!,
+        prevalence: 'common',
+        description: 'Countdown timers create false urgency.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp4')!,
+        prevalence: 'common',
+        description: 'Low stock messages pressure purchases.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp2')!,
+        prevalence: 'common',
+        description: 'Hidden costs in checkout.'
+      },
+    ],
+    sideEffects: [
+      sideEffects.find(se => se.id === 'se5')!,
+      sideEffects.find(se => se.id === 'se8')!,
+    ],
+    transparencyScore: 45,
+    icon: '🛒',
+    studies: getStudiesForProduct('Shopify'),
+    tags: ["shopping","retail","marketplace"]
+  },
+  {
+    id: 'product38',
+    name: 'Walmart',
+    category: 'ecommerce',
+    description: 'American multinational retail corporation.',
+    darkPatterns: [
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp3')!,
+        prevalence: 'common',
+        description: 'Countdown timers create false urgency.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp4')!,
+        prevalence: 'common',
+        description: 'Low stock messages pressure purchases.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp2')!,
+        prevalence: 'common',
+        description: 'Hidden costs in checkout.'
+      },
+    ],
+    sideEffects: [
+      sideEffects.find(se => se.id === 'se5')!,
+      sideEffects.find(se => se.id === 'se8')!,
+    ],
+    transparencyScore: 45,
+    icon: '🛍️',
+    studies: getStudiesForProduct('Walmart'),
+    tags: ["shopping","retail","marketplace"]
+  },
+  {
+    id: 'product39',
+    name: 'Target',
+    category: 'ecommerce',
+    description: 'American retail corporation.',
+    darkPatterns: [
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp3')!,
+        prevalence: 'common',
+        description: 'Countdown timers create false urgency.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp4')!,
+        prevalence: 'common',
+        description: 'Low stock messages pressure purchases.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp2')!,
+        prevalence: 'common',
+        description: 'Hidden costs in checkout.'
+      },
+    ],
+    sideEffects: [
+      sideEffects.find(se => se.id === 'se5')!,
+      sideEffects.find(se => se.id === 'se8')!,
+    ],
+    transparencyScore: 45,
+    icon: '🎯',
+    studies: getStudiesForProduct('Target'),
+    tags: ["shopping","retail","marketplace"]
+  },
+  {
+    id: 'product40',
+    name: 'Etsy',
+    category: 'ecommerce',
+    description: 'E-commerce website focused on handmade or vintage items and craft supplies.',
+    darkPatterns: [
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp3')!,
+        prevalence: 'common',
+        description: 'Countdown timers create false urgency.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp4')!,
+        prevalence: 'common',
+        description: 'Low stock messages pressure purchases.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp2')!,
+        prevalence: 'common',
+        description: 'Hidden costs in checkout.'
+      },
+    ],
+    sideEffects: [
+      sideEffects.find(se => se.id === 'se5')!,
+      sideEffects.find(se => se.id === 'se8')!,
+    ],
+    transparencyScore: 45,
+    icon: '✂️',
+    studies: getStudiesForProduct('Etsy'),
+    tags: ["shopping","retail","marketplace"]
+  },
+  {
+    id: 'product41',
+    name: 'Wish',
+    category: 'ecommerce',
+    description: 'Mobile e-commerce platform that connects customers with merchants.',
+    darkPatterns: [
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp3')!,
+        prevalence: 'common',
+        description: 'Countdown timers create false urgency.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp4')!,
+        prevalence: 'common',
+        description: 'Low stock messages pressure purchases.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp2')!,
+        prevalence: 'common',
+        description: 'Hidden costs in checkout.'
+      },
+    ],
+    sideEffects: [
+      sideEffects.find(se => se.id === 'se5')!,
+      sideEffects.find(se => se.id === 'se8')!,
+    ],
+    transparencyScore: 45,
+    icon: '⭐',
+    studies: getStudiesForProduct('Wish'),
+    tags: ["shopping","retail","marketplace"]
+  },
+  {
+    id: 'product42',
+    name: 'AliExpress',
+    category: 'ecommerce',
+    description: 'Chinese online retail service.',
+    darkPatterns: [
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp3')!,
+        prevalence: 'common',
+        description: 'Countdown timers create false urgency.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp4')!,
+        prevalence: 'common',
+        description: 'Low stock messages pressure purchases.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp2')!,
+        prevalence: 'common',
+        description: 'Hidden costs in checkout.'
+      },
+    ],
+    sideEffects: [
+      sideEffects.find(se => se.id === 'se5')!,
+      sideEffects.find(se => se.id === 'se8')!,
+    ],
+    transparencyScore: 45,
+    icon: '📦',
+    studies: getStudiesForProduct('AliExpress'),
+    tags: ["shopping","retail","marketplace"]
+  },
+  {
+    id: 'product43',
+    name: 'Best Buy',
+    category: 'ecommerce',
+    description: 'American multinational consumer electronics retailer.',
+    darkPatterns: [
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp3')!,
+        prevalence: 'common',
+        description: 'Countdown timers create false urgency.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp4')!,
+        prevalence: 'common',
+        description: 'Low stock messages pressure purchases.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp2')!,
+        prevalence: 'common',
+        description: 'Hidden costs in checkout.'
+      },
+    ],
+    sideEffects: [
+      sideEffects.find(se => se.id === 'se5')!,
+      sideEffects.find(se => se.id === 'se8')!,
+    ],
+    transparencyScore: 45,
+    icon: '📺',
+    studies: getStudiesForProduct('Best Buy'),
+    tags: ["shopping","retail","marketplace"]
+  },
+  {
+    id: 'product44',
+    name: 'Newegg',
+    category: 'ecommerce',
+    description: 'Online retailer of computer hardware and consumer electronics.',
+    darkPatterns: [
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp3')!,
+        prevalence: 'common',
+        description: 'Countdown timers create false urgency.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp4')!,
+        prevalence: 'common',
+        description: 'Low stock messages pressure purchases.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp2')!,
+        prevalence: 'common',
+        description: 'Hidden costs in checkout.'
+      },
+    ],
+    sideEffects: [
+      sideEffects.find(se => se.id === 'se5')!,
+      sideEffects.find(se => se.id === 'se8')!,
+    ],
+    transparencyScore: 45,
+    icon: '💻',
+    studies: getStudiesForProduct('Newegg'),
+    tags: ["shopping","retail","marketplace"]
+  },
+  {
+    id: 'product45',
+    name: 'Wayfair',
+    category: 'ecommerce',
+    description: 'American e-commerce company that sells furniture and home goods.',
+    darkPatterns: [
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp3')!,
+        prevalence: 'common',
+        description: 'Countdown timers create false urgency.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp4')!,
+        prevalence: 'common',
+        description: 'Low stock messages pressure purchases.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp2')!,
+        prevalence: 'common',
+        description: 'Hidden costs in checkout.'
+      },
+    ],
+    sideEffects: [
+      sideEffects.find(se => se.id === 'se5')!,
+      sideEffects.find(se => se.id === 'se8')!,
+    ],
+    transparencyScore: 45,
+    icon: '🛋️',
+    studies: getStudiesForProduct('Wayfair'),
+    tags: ["shopping","retail","marketplace"]
+  },
+  {
+    id: 'product46',
+    name: 'Zalando',
+    category: 'ecommerce',
+    description: 'European online fashion platform.',
+    darkPatterns: [
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp3')!,
+        prevalence: 'common',
+        description: 'Countdown timers create false urgency.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp4')!,
+        prevalence: 'common',
+        description: 'Low stock messages pressure purchases.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp2')!,
+        prevalence: 'common',
+        description: 'Hidden costs in checkout.'
+      },
+    ],
+    sideEffects: [
+      sideEffects.find(se => se.id === 'se5')!,
+      sideEffects.find(se => se.id === 'se8')!,
+    ],
+    transparencyScore: 45,
+    icon: '👠',
+    studies: getStudiesForProduct('Zalando'),
+    tags: ["shopping","retail","marketplace"]
+  },
+  {
+    id: 'product47',
+    name: 'ASOS',
+    category: 'ecommerce',
+    description: 'British online fashion and cosmetic retailer.',
+    darkPatterns: [
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp3')!,
+        prevalence: 'common',
+        description: 'Countdown timers create false urgency.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp4')!,
+        prevalence: 'common',
+        description: 'Low stock messages pressure purchases.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp2')!,
+        prevalence: 'common',
+        description: 'Hidden costs in checkout.'
+      },
+    ],
+    sideEffects: [
+      sideEffects.find(se => se.id === 'se5')!,
+      sideEffects.find(se => se.id === 'se8')!,
+    ],
+    transparencyScore: 45,
+    icon: '👗',
+    studies: getStudiesForProduct('ASOS'),
+    tags: ["shopping","retail","marketplace"]
+  },
+  {
+    id: 'product48',
+    name: 'JD.com',
+    category: 'ecommerce',
+    description: 'Chinese online retail company.',
+    darkPatterns: [
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp3')!,
+        prevalence: 'common',
+        description: 'Countdown timers create false urgency.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp4')!,
+        prevalence: 'common',
+        description: 'Low stock messages pressure purchases.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp2')!,
+        prevalence: 'common',
+        description: 'Hidden costs in checkout.'
+      },
+    ],
+    sideEffects: [
+      sideEffects.find(se => se.id === 'se5')!,
+      sideEffects.find(se => se.id === 'se8')!,
+    ],
+    transparencyScore: 45,
+    icon: '📦',
+    studies: getStudiesForProduct('JD.com'),
+    tags: ["shopping","retail","marketplace"]
+  },
+  {
+    id: 'product49',
+    name: 'Rakuten',
+    category: 'ecommerce',
+    description: 'Japanese e-commerce and online retailing company.',
+    darkPatterns: [
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp3')!,
+        prevalence: 'common',
+        description: 'Countdown timers create false urgency.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp4')!,
+        prevalence: 'common',
+        description: 'Low stock messages pressure purchases.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp2')!,
+        prevalence: 'common',
+        description: 'Hidden costs in checkout.'
+      },
+    ],
+    sideEffects: [
+      sideEffects.find(se => se.id === 'se5')!,
+      sideEffects.find(se => se.id === 'se8')!,
+    ],
+    transparencyScore: 45,
+    icon: '🛍️',
+    studies: getStudiesForProduct('Rakuten'),
+    tags: ["shopping","retail","marketplace"]
+  },
+  {
+    id: 'product50',
+    name: 'Farfetch',
+    category: 'ecommerce',
+    description: 'Online luxury fashion retail platform.',
+    darkPatterns: [
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp3')!,
+        prevalence: 'common',
+        description: 'Countdown timers create false urgency.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp4')!,
+        prevalence: 'common',
+        description: 'Low stock messages pressure purchases.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp2')!,
+        prevalence: 'common',
+        description: 'Hidden costs in checkout.'
+      },
+    ],
+    sideEffects: [
+      sideEffects.find(se => se.id === 'se5')!,
+      sideEffects.find(se => se.id === 'se8')!,
+    ],
+    transparencyScore: 45,
+    icon: '👔',
+    studies: getStudiesForProduct('Farfetch'),
+    tags: ["shopping","retail","marketplace"]
+  },
+  {
+    id: 'product51',
+    name: 'Hulu',
+    category: 'streaming',
+    description: 'Subscription streaming service offering films and television series.',
+    darkPatterns: [
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp1')!,
+        prevalence: 'common',
+        description: 'Free trial auto-converts to paid subscription.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp6')!,
+        prevalence: 'common',
+        description: 'Complex cancellation process.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp7')!,
+        prevalence: 'ubiquitous',
+        description: 'Auto-play next episode forces continued watching.'
+      },
+    ],
+    sideEffects: [
+      sideEffects.find(se => se.id === 'se2')!,
+      sideEffects.find(se => se.id === 'se7')!,
+      sideEffects.find(se => se.id === 'se8')!,
+    ],
+    transparencyScore: 65,
+    icon: '📺',
+    studies: getStudiesForProduct('Hulu'),
+    tags: ["video","music","entertainment"]
+  },
+  {
+    id: 'product52',
+    name: 'Disney+',
+    category: 'streaming',
+    description: 'American subscription video on-demand over-the-top streaming service.',
+    darkPatterns: [
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp1')!,
+        prevalence: 'common',
+        description: 'Free trial auto-converts to paid subscription.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp6')!,
+        prevalence: 'common',
+        description: 'Complex cancellation process.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp7')!,
+        prevalence: 'ubiquitous',
+        description: 'Auto-play next episode forces continued watching.'
+      },
+    ],
+    sideEffects: [
+      sideEffects.find(se => se.id === 'se2')!,
+      sideEffects.find(se => se.id === 'se7')!,
+      sideEffects.find(se => se.id === 'se8')!,
+    ],
+    transparencyScore: 65,
+    icon: '🏰',
+    studies: getStudiesForProduct('Disney+'),
+    tags: ["video","music","entertainment"]
+  },
+  {
+    id: 'product53',
+    name: 'HBO Max',
+    category: 'streaming',
+    description: 'American subscription video on-demand streaming service.',
+    darkPatterns: [
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp1')!,
+        prevalence: 'common',
+        description: 'Free trial auto-converts to paid subscription.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp6')!,
+        prevalence: 'common',
+        description: 'Complex cancellation process.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp7')!,
+        prevalence: 'ubiquitous',
+        description: 'Auto-play next episode forces continued watching.'
+      },
+    ],
+    sideEffects: [
+      sideEffects.find(se => se.id === 'se2')!,
+      sideEffects.find(se => se.id === 'se7')!,
+      sideEffects.find(se => se.id === 'se8')!,
+    ],
+    transparencyScore: 65,
+    icon: '🎬',
+    studies: getStudiesForProduct('HBO Max'),
+    tags: ["video","music","entertainment"]
+  },
+  {
+    id: 'product54',
+    name: 'Apple TV+',
+    category: 'streaming',
+    description: 'Subscription streaming service by Apple Inc.',
+    darkPatterns: [
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp1')!,
+        prevalence: 'common',
+        description: 'Free trial auto-converts to paid subscription.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp6')!,
+        prevalence: 'common',
+        description: 'Complex cancellation process.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp7')!,
+        prevalence: 'ubiquitous',
+        description: 'Auto-play next episode forces continued watching.'
+      },
+    ],
+    sideEffects: [
+      sideEffects.find(se => se.id === 'se2')!,
+      sideEffects.find(se => se.id === 'se7')!,
+      sideEffects.find(se => se.id === 'se8')!,
+    ],
+    transparencyScore: 65,
+    icon: '📱',
+    studies: getStudiesForProduct('Apple TV+'),
+    tags: ["video","music","entertainment"]
+  },
+  {
+    id: 'product55',
+    name: 'YouTube Premium',
+    category: 'streaming',
+    description: 'Subscription service offering ad-free YouTube and original content.',
+    darkPatterns: [
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp1')!,
+        prevalence: 'common',
+        description: 'Free trial auto-converts to paid subscription.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp6')!,
+        prevalence: 'common',
+        description: 'Complex cancellation process.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp7')!,
+        prevalence: 'ubiquitous',
+        description: 'Auto-play next episode forces continued watching.'
+      },
+    ],
+    sideEffects: [
+      sideEffects.find(se => se.id === 'se2')!,
+      sideEffects.find(se => se.id === 'se7')!,
+      sideEffects.find(se => se.id === 'se8')!,
+    ],
+    transparencyScore: 65,
+    icon: '📹',
+    studies: getStudiesForProduct('YouTube Premium'),
+    tags: ["video","music","entertainment"]
+  },
+  {
+    id: 'product56',
+    name: 'Amazon Prime Video',
+    category: 'streaming',
+    description: 'Amazon\'s streaming video service.',
+    darkPatterns: [
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp1')!,
+        prevalence: 'common',
+        description: 'Free trial auto-converts to paid subscription.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp6')!,
+        prevalence: 'common',
+        description: 'Complex cancellation process.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp7')!,
+        prevalence: 'ubiquitous',
+        description: 'Auto-play next episode forces continued watching.'
+      },
+    ],
+    sideEffects: [
+      sideEffects.find(se => se.id === 'se2')!,
+      sideEffects.find(se => se.id === 'se7')!,
+      sideEffects.find(se => se.id === 'se8')!,
+    ],
+    transparencyScore: 65,
+    icon: '🎥',
+    studies: getStudiesForProduct('Amazon Prime Video'),
+    tags: ["video","music","entertainment"]
+  },
+  {
+    id: 'product57',
+    name: 'Twitch',
+    category: 'streaming',
+    description: 'Video live streaming service for gamers.',
+    darkPatterns: [
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp1')!,
+        prevalence: 'common',
+        description: 'Free trial auto-converts to paid subscription.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp6')!,
+        prevalence: 'common',
+        description: 'Complex cancellation process.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp7')!,
+        prevalence: 'ubiquitous',
+        description: 'Auto-play next episode forces continued watching.'
+      },
+    ],
+    sideEffects: [
+      sideEffects.find(se => se.id === 'se2')!,
+      sideEffects.find(se => se.id === 'se7')!,
+      sideEffects.find(se => se.id === 'se8')!,
+    ],
+    transparencyScore: 65,
+    icon: '🟣',
+    studies: getStudiesForProduct('Twitch'),
+    tags: ["video","music","entertainment"]
+  },
+  {
+    id: 'product58',
+    name: 'Crunchyroll',
+    category: 'streaming',
+    description: 'American subscription video on-demand service for anime.',
+    darkPatterns: [
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp1')!,
+        prevalence: 'common',
+        description: 'Free trial auto-converts to paid subscription.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp6')!,
+        prevalence: 'common',
+        description: 'Complex cancellation process.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp7')!,
+        prevalence: 'ubiquitous',
+        description: 'Auto-play next episode forces continued watching.'
+      },
+    ],
+    sideEffects: [
+      sideEffects.find(se => se.id === 'se2')!,
+      sideEffects.find(se => se.id === 'se7')!,
+      sideEffects.find(se => se.id === 'se8')!,
+    ],
+    transparencyScore: 65,
+    icon: '🍥',
+    studies: getStudiesForProduct('Crunchyroll'),
+    tags: ["video","music","entertainment"]
+  },
+  {
+    id: 'product59',
+    name: 'Paramount+',
+    category: 'streaming',
+    description: 'Subscription streaming service from Paramount Global.',
+    darkPatterns: [
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp1')!,
+        prevalence: 'common',
+        description: 'Free trial auto-converts to paid subscription.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp6')!,
+        prevalence: 'common',
+        description: 'Complex cancellation process.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp7')!,
+        prevalence: 'ubiquitous',
+        description: 'Auto-play next episode forces continued watching.'
+      },
+    ],
+    sideEffects: [
+      sideEffects.find(se => se.id === 'se2')!,
+      sideEffects.find(se => se.id === 'se7')!,
+      sideEffects.find(se => se.id === 'se8')!,
+    ],
+    transparencyScore: 65,
+    icon: '🌌',
+    studies: getStudiesForProduct('Paramount+'),
+    tags: ["video","music","entertainment"]
+  },
+  {
+    id: 'product60',
+    name: 'Peacock',
+    category: 'streaming',
+    description: 'American streaming service from NBCUniversal.',
+    darkPatterns: [
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp1')!,
+        prevalence: 'common',
+        description: 'Free trial auto-converts to paid subscription.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp6')!,
+        prevalence: 'common',
+        description: 'Complex cancellation process.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp7')!,
+        prevalence: 'ubiquitous',
+        description: 'Auto-play next episode forces continued watching.'
+      },
+    ],
+    sideEffects: [
+      sideEffects.find(se => se.id === 'se2')!,
+      sideEffects.find(se => se.id === 'se7')!,
+      sideEffects.find(se => se.id === 'se8')!,
+    ],
+    transparencyScore: 65,
+    icon: '🦚',
+    studies: getStudiesForProduct('Peacock'),
+    tags: ["video","music","entertainment"]
+  },
+  {
+    id: 'product61',
+    name: 'Minecraft',
+    category: 'gaming',
+    description: 'Sandbox video game developed by Mojang Studios.',
+    darkPatterns: [
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp7')!,
+        prevalence: 'ubiquitous',
+        description: 'Forces in-app purchases to progress.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp4')!,
+        prevalence: 'common',
+        description: 'Limited-time items create artificial scarcity.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp9')!,
+        prevalence: 'common',
+        description: 'Gamified manipulation encourages spending.'
+      },
+    ],
+    sideEffects: [
+      sideEffects.find(se => se.id === 'se7')!,
+      sideEffects.find(se => se.id === 'se5')!,
+      sideEffects.find(se => se.id === 'se1')!,
+    ],
+    transparencyScore: 30,
+    icon: '🧱',
+    studies: getStudiesForProduct('Minecraft'),
+    tags: ["mobile","pc","console","addictive"]
+  },
+  {
+    id: 'product62',
+    name: 'Roblox',
+    category: 'gaming',
+    description: 'Online game platform and game creation system.',
+    darkPatterns: [
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp7')!,
+        prevalence: 'ubiquitous',
+        description: 'Forces in-app purchases to progress.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp4')!,
+        prevalence: 'common',
+        description: 'Limited-time items create artificial scarcity.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp9')!,
+        prevalence: 'common',
+        description: 'Gamified manipulation encourages spending.'
+      },
+    ],
+    sideEffects: [
+      sideEffects.find(se => se.id === 'se7')!,
+      sideEffects.find(se => se.id === 'se5')!,
+      sideEffects.find(se => se.id === 'se1')!,
+    ],
+    transparencyScore: 30,
+    icon: '🧩',
+    studies: getStudiesForProduct('Roblox'),
+    tags: ["mobile","pc","console","addictive"]
+  },
+  {
+    id: 'product63',
+    name: 'Call of Duty Mobile',
+    category: 'gaming',
+    description: 'Free-to-play shooter game in the Call of Duty franchise.',
+    darkPatterns: [
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp7')!,
+        prevalence: 'ubiquitous',
+        description: 'Forces in-app purchases to progress.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp4')!,
+        prevalence: 'common',
+        description: 'Limited-time items create artificial scarcity.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp9')!,
+        prevalence: 'common',
+        description: 'Gamified manipulation encourages spending.'
+      },
+    ],
+    sideEffects: [
+      sideEffects.find(se => se.id === 'se7')!,
+      sideEffects.find(se => se.id === 'se5')!,
+      sideEffects.find(se => se.id === 'se1')!,
+    ],
+    transparencyScore: 30,
+    icon: '🔫',
+    studies: getStudiesForProduct('Call of Duty Mobile'),
+    tags: ["mobile","pc","console","addictive"]
+  },
+  {
+    id: 'product64',
+    name: 'PUBG Mobile',
+    category: 'gaming',
+    description: 'Battle royale mobile game.',
+    darkPatterns: [
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp7')!,
+        prevalence: 'ubiquitous',
+        description: 'Forces in-app purchases to progress.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp4')!,
+        prevalence: 'common',
+        description: 'Limited-time items create artificial scarcity.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp9')!,
+        prevalence: 'common',
+        description: 'Gamified manipulation encourages spending.'
+      },
+    ],
+    sideEffects: [
+      sideEffects.find(se => se.id === 'se7')!,
+      sideEffects.find(se => se.id === 'se5')!,
+      sideEffects.find(se => se.id === 'se1')!,
+    ],
+    transparencyScore: 30,
+    icon: '🎯',
+    studies: getStudiesForProduct('PUBG Mobile'),
+    tags: ["mobile","pc","console","addictive"]
+  },
+  {
+    id: 'product65',
+    name: 'Among Us',
+    category: 'gaming',
+    description: 'Online multiplayer social deduction game.',
+    darkPatterns: [
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp7')!,
+        prevalence: 'ubiquitous',
+        description: 'Forces in-app purchases to progress.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp4')!,
+        prevalence: 'common',
+        description: 'Limited-time items create artificial scarcity.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp9')!,
+        prevalence: 'common',
+        description: 'Gamified manipulation encourages spending.'
+      },
+    ],
+    sideEffects: [
+      sideEffects.find(se => se.id === 'se7')!,
+      sideEffects.find(se => se.id === 'se5')!,
+      sideEffects.find(se => se.id === 'se1')!,
+    ],
+    transparencyScore: 30,
+    icon: '👨‍🚀',
+    studies: getStudiesForProduct('Among Us'),
+    tags: ["mobile","pc","console","addictive"]
+  },
+  {
+    id: 'product66',
+    name: 'Clash of Clans',
+    category: 'gaming',
+    description: 'Freemium mobile strategy video game.',
+    darkPatterns: [
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp7')!,
+        prevalence: 'ubiquitous',
+        description: 'Forces in-app purchases to progress.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp4')!,
+        prevalence: 'common',
+        description: 'Limited-time items create artificial scarcity.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp9')!,
+        prevalence: 'common',
+        description: 'Gamified manipulation encourages spending.'
+      },
+    ],
+    sideEffects: [
+      sideEffects.find(se => se.id === 'se7')!,
+      sideEffects.find(se => se.id === 'se5')!,
+      sideEffects.find(se => se.id === 'se1')!,
+    ],
+    transparencyScore: 30,
+    icon: '⚔️',
+    studies: getStudiesForProduct('Clash of Clans'),
+    tags: ["mobile","pc","console","addictive"]
+  },
+  {
+    id: 'product67',
+    name: 'Clash Royale',
+    category: 'gaming',
+    description: 'Freemium real-time strategy video game.',
+    darkPatterns: [
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp7')!,
+        prevalence: 'ubiquitous',
+        description: 'Forces in-app purchases to progress.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp4')!,
+        prevalence: 'common',
+        description: 'Limited-time items create artificial scarcity.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp9')!,
+        prevalence: 'common',
+        description: 'Gamified manipulation encourages spending.'
+      },
+    ],
+    sideEffects: [
+      sideEffects.find(se => se.id === 'se7')!,
+      sideEffects.find(se => se.id === 'se5')!,
+      sideEffects.find(se => se.id === 'se1')!,
+    ],
+    transparencyScore: 30,
+    icon: '👑',
+    studies: getStudiesForProduct('Clash Royale'),
+    tags: ["mobile","pc","console","addictive"]
+  },
+  {
+    id: 'product68',
+    name: 'Pokémon GO',
+    category: 'gaming',
+    description: 'Augmented reality mobile game.',
+    darkPatterns: [
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp7')!,
+        prevalence: 'ubiquitous',
+        description: 'Forces in-app purchases to progress.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp4')!,
+        prevalence: 'common',
+        description: 'Limited-time items create artificial scarcity.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp9')!,
+        prevalence: 'common',
+        description: 'Gamified manipulation encourages spending.'
+      },
+    ],
+    sideEffects: [
+      sideEffects.find(se => se.id === 'se7')!,
+      sideEffects.find(se => se.id === 'se5')!,
+      sideEffects.find(se => se.id === 'se1')!,
+    ],
+    transparencyScore: 30,
+    icon: '🐾',
+    studies: getStudiesForProduct('Pokémon GO'),
+    tags: ["mobile","pc","console","addictive"]
+  },
+  {
+    id: 'product69',
+    name: 'Genshin Impact',
+    category: 'gaming',
+    description: 'Action role-playing game with gacha mechanics.',
+    darkPatterns: [
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp7')!,
+        prevalence: 'ubiquitous',
+        description: 'Forces in-app purchases to progress.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp4')!,
+        prevalence: 'common',
+        description: 'Limited-time items create artificial scarcity.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp9')!,
+        prevalence: 'common',
+        description: 'Gamified manipulation encourages spending.'
+      },
+    ],
+    sideEffects: [
+      sideEffects.find(se => se.id === 'se7')!,
+      sideEffects.find(se => se.id === 'se5')!,
+      sideEffects.find(se => se.id === 'se1')!,
+    ],
+    transparencyScore: 30,
+    icon: '⚔️',
+    studies: getStudiesForProduct('Genshin Impact'),
+    tags: ["mobile","pc","console","addictive"]
+  },
+  {
+    id: 'product70',
+    name: 'League of Legends',
+    category: 'gaming',
+    description: 'Multiplayer online battle arena video game.',
+    darkPatterns: [
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp7')!,
+        prevalence: 'ubiquitous',
+        description: 'Forces in-app purchases to progress.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp4')!,
+        prevalence: 'common',
+        description: 'Limited-time items create artificial scarcity.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp9')!,
+        prevalence: 'common',
+        description: 'Gamified manipulation encourages spending.'
+      },
+    ],
+    sideEffects: [
+      sideEffects.find(se => se.id === 'se7')!,
+      sideEffects.find(se => se.id === 'se5')!,
+      sideEffects.find(se => se.id === 'se1')!,
+    ],
+    transparencyScore: 30,
+    icon: '⚡',
+    studies: getStudiesForProduct('League of Legends'),
+    tags: ["mobile","pc","console","addictive"]
+  },
+  {
+    id: 'product71',
+    name: 'PayPal',
+    category: 'finance',
+    description: 'Online payment system supporting online money transfers.',
+    darkPatterns: [
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp9')!,
+        prevalence: 'common',
+        description: 'Gamified interface encourages risky behavior.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp2')!,
+        prevalence: 'common',
+        description: 'Hidden fees or commission structures.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp3')!,
+        prevalence: 'rare',
+        description: 'Urgent investment opportunities.'
+      },
+    ],
+    sideEffects: [
+      sideEffects.find(se => se.id === 'se5')!,
+      sideEffects.find(se => se.id === 'se1')!,
+      sideEffects.find(se => se.id === 'se7')!,
+    ],
+    transparencyScore: 40,
+    icon: '💳',
+    studies: getStudiesForProduct('PayPal'),
+    tags: ["money","investing","banking"]
+  },
+  {
+    id: 'product72',
+    name: 'Venmo',
+    category: 'finance',
+    description: 'Mobile payment service owned by PayPal.',
+    darkPatterns: [
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp9')!,
+        prevalence: 'common',
+        description: 'Gamified interface encourages risky behavior.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp2')!,
+        prevalence: 'common',
+        description: 'Hidden fees or commission structures.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp3')!,
+        prevalence: 'rare',
+        description: 'Urgent investment opportunities.'
+      },
+    ],
+    sideEffects: [
+      sideEffects.find(se => se.id === 'se5')!,
+      sideEffects.find(se => se.id === 'se1')!,
+      sideEffects.find(se => se.id === 'se7')!,
+    ],
+    transparencyScore: 40,
+    icon: '💰',
+    studies: getStudiesForProduct('Venmo'),
+    tags: ["money","investing","banking"]
+  },
+  {
+    id: 'product73',
+    name: 'Cash App',
+    category: 'finance',
+    description: 'Mobile payment service developed by Square.',
+    darkPatterns: [
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp9')!,
+        prevalence: 'common',
+        description: 'Gamified interface encourages risky behavior.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp2')!,
+        prevalence: 'common',
+        description: 'Hidden fees or commission structures.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp3')!,
+        prevalence: 'rare',
+        description: 'Urgent investment opportunities.'
+      },
+    ],
+    sideEffects: [
+      sideEffects.find(se => se.id === 'se5')!,
+      sideEffects.find(se => se.id === 'se1')!,
+      sideEffects.find(se => se.id === 'se7')!,
+    ],
+    transparencyScore: 40,
+    icon: '💵',
+    studies: getStudiesForProduct('Cash App'),
+    tags: ["money","investing","banking"]
+  },
+  {
+    id: 'product74',
+    name: 'Coinbase',
+    category: 'finance',
+    description: 'Cryptocurrency exchange platform.',
+    darkPatterns: [
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp9')!,
+        prevalence: 'common',
+        description: 'Gamified interface encourages risky behavior.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp2')!,
+        prevalence: 'common',
+        description: 'Hidden fees or commission structures.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp3')!,
+        prevalence: 'rare',
+        description: 'Urgent investment opportunities.'
+      },
+    ],
+    sideEffects: [
+      sideEffects.find(se => se.id === 'se5')!,
+      sideEffects.find(se => se.id === 'se1')!,
+      sideEffects.find(se => se.id === 'se7')!,
+    ],
+    transparencyScore: 40,
+    icon: '₿',
+    studies: getStudiesForProduct('Coinbase'),
+    tags: ["money","investing","banking"]
+  },
+  {
+    id: 'product75',
+    name: 'Acorns',
+    category: 'finance',
+    description: 'Financial technology company that invests spare change.',
+    darkPatterns: [
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp9')!,
+        prevalence: 'common',
+        description: 'Gamified interface encourages risky behavior.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp2')!,
+        prevalence: 'common',
+        description: 'Hidden fees or commission structures.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp3')!,
+        prevalence: 'rare',
+        description: 'Urgent investment opportunities.'
+      },
+    ],
+    sideEffects: [
+      sideEffects.find(se => se.id === 'se5')!,
+      sideEffects.find(se => se.id === 'se1')!,
+      sideEffects.find(se => se.id === 'se7')!,
+    ],
+    transparencyScore: 40,
+    icon: '🌰',
+    studies: getStudiesForProduct('Acorns'),
+    tags: ["money","investing","banking"]
+  },
+  {
+    id: 'product76',
+    name: 'Chime',
+    category: 'finance',
+    description: 'Financial technology company providing banking services.',
+    darkPatterns: [
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp9')!,
+        prevalence: 'common',
+        description: 'Gamified interface encourages risky behavior.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp2')!,
+        prevalence: 'common',
+        description: 'Hidden fees or commission structures.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp3')!,
+        prevalence: 'rare',
+        description: 'Urgent investment opportunities.'
+      },
+    ],
+    sideEffects: [
+      sideEffects.find(se => se.id === 'se5')!,
+      sideEffects.find(se => se.id === 'se1')!,
+      sideEffects.find(se => se.id === 'se7')!,
+    ],
+    transparencyScore: 40,
+    icon: '🏦',
+    studies: getStudiesForProduct('Chime'),
+    tags: ["money","investing","banking"]
+  },
+  {
+    id: 'product77',
+    name: 'Mint',
+    category: 'finance',
+    description: 'Personal finance management service.',
+    darkPatterns: [
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp9')!,
+        prevalence: 'common',
+        description: 'Gamified interface encourages risky behavior.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp2')!,
+        prevalence: 'common',
+        description: 'Hidden fees or commission structures.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp3')!,
+        prevalence: 'rare',
+        description: 'Urgent investment opportunities.'
+      },
+    ],
+    sideEffects: [
+      sideEffects.find(se => se.id === 'se5')!,
+      sideEffects.find(se => se.id === 'se1')!,
+      sideEffects.find(se => se.id === 'se7')!,
+    ],
+    transparencyScore: 40,
+    icon: '🌿',
+    studies: getStudiesForProduct('Mint'),
+    tags: ["money","investing","banking"]
+  },
+  {
+    id: 'product78',
+    name: 'YNAB',
+    category: 'finance',
+    description: 'Personal budgeting software.',
+    darkPatterns: [
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp9')!,
+        prevalence: 'common',
+        description: 'Gamified interface encourages risky behavior.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp2')!,
+        prevalence: 'common',
+        description: 'Hidden fees or commission structures.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp3')!,
+        prevalence: 'rare',
+        description: 'Urgent investment opportunities.'
+      },
+    ],
+    sideEffects: [
+      sideEffects.find(se => se.id === 'se5')!,
+      sideEffects.find(se => se.id === 'se1')!,
+      sideEffects.find(se => se.id === 'se7')!,
+    ],
+    transparencyScore: 40,
+    icon: '📊',
+    studies: getStudiesForProduct('YNAB'),
+    tags: ["money","investing","banking"]
+  },
+  {
+    id: 'product79',
+    name: 'TurboTax',
+    category: 'finance',
+    description: 'Tax preparation software.',
+    darkPatterns: [
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp9')!,
+        prevalence: 'common',
+        description: 'Gamified interface encourages risky behavior.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp2')!,
+        prevalence: 'common',
+        description: 'Hidden fees or commission structures.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp3')!,
+        prevalence: 'rare',
+        description: 'Urgent investment opportunities.'
+      },
+    ],
+    sideEffects: [
+      sideEffects.find(se => se.id === 'se5')!,
+      sideEffects.find(se => se.id === 'se1')!,
+      sideEffects.find(se => se.id === 'se7')!,
+    ],
+    transparencyScore: 40,
+    icon: '📑',
+    studies: getStudiesForProduct('TurboTax'),
+    tags: ["money","investing","banking"]
+  },
+  {
+    id: 'product80',
+    name: 'Credit Karma',
+    category: 'finance',
+    description: 'Personal finance company.',
+    darkPatterns: [
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp9')!,
+        prevalence: 'common',
+        description: 'Gamified interface encourages risky behavior.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp2')!,
+        prevalence: 'common',
+        description: 'Hidden fees or commission structures.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp3')!,
+        prevalence: 'rare',
+        description: 'Urgent investment opportunities.'
+      },
+    ],
+    sideEffects: [
+      sideEffects.find(se => se.id === 'se5')!,
+      sideEffects.find(se => se.id === 'se1')!,
+      sideEffects.find(se => se.id === 'se7')!,
+    ],
+    transparencyScore: 40,
+    icon: '💳',
+    studies: getStudiesForProduct('Credit Karma'),
+    tags: ["money","investing","banking"]
+  },
+  {
+    id: 'product81',
+    name: 'Bumble',
+    category: 'dating',
+    description: 'Dating app where women make the first move.',
+    darkPatterns: [
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp5')!,
+        prevalence: 'ubiquitous',
+        description: 'Fake activity notifications about profile views.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp8')!,
+        prevalence: 'common',
+        description: 'Shames users for not upgrading to premium.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp7')!,
+        prevalence: 'common',
+        description: 'Forces purchase of premium to see likes.'
+      },
+    ],
+    sideEffects: [
+      sideEffects.find(se => se.id === 'se1')!,
+      sideEffects.find(se => se.id === 'se6')!,
+      sideEffects.find(se => se.id === 'se7')!,
+    ],
+    transparencyScore: 35,
+    icon: '🐝',
+    studies: getStudiesForProduct('Bumble'),
+    tags: ["relationships","social","premium"]
+  },
+  {
+    id: 'product82',
+    name: 'Hinge',
+    category: 'dating',
+    description: 'Dating app designed to be deleted.',
+    darkPatterns: [
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp5')!,
+        prevalence: 'ubiquitous',
+        description: 'Fake activity notifications about profile views.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp8')!,
+        prevalence: 'common',
+        description: 'Shames users for not upgrading to premium.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp7')!,
+        prevalence: 'common',
+        description: 'Forces purchase of premium to see likes.'
+      },
+    ],
+    sideEffects: [
+      sideEffects.find(se => se.id === 'se1')!,
+      sideEffects.find(se => se.id === 'se6')!,
+      sideEffects.find(se => se.id === 'se7')!,
+    ],
+    transparencyScore: 35,
+    icon: '🔗',
+    studies: getStudiesForProduct('Hinge'),
+    tags: ["relationships","social","premium"]
+  },
+  {
+    id: 'product83',
+    name: 'OkCupid',
+    category: 'dating',
+    description: 'American online dating, friendship, and social networking platform.',
+    darkPatterns: [
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp5')!,
+        prevalence: 'ubiquitous',
+        description: 'Fake activity notifications about profile views.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp8')!,
+        prevalence: 'common',
+        description: 'Shames users for not upgrading to premium.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp7')!,
+        prevalence: 'common',
+        description: 'Forces purchase of premium to see likes.'
+      },
+    ],
+    sideEffects: [
+      sideEffects.find(se => se.id === 'se1')!,
+      sideEffects.find(se => se.id === 'se6')!,
+      sideEffects.find(se => se.id === 'se7')!,
+    ],
+    transparencyScore: 35,
+    icon: '💘',
+    studies: getStudiesForProduct('OkCupid'),
+    tags: ["relationships","social","premium"]
+  },
+  {
+    id: 'product84',
+    name: 'Match.com',
+    category: 'dating',
+    description: 'Online dating website.',
+    darkPatterns: [
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp5')!,
+        prevalence: 'ubiquitous',
+        description: 'Fake activity notifications about profile views.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp8')!,
+        prevalence: 'common',
+        description: 'Shames users for not upgrading to premium.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp7')!,
+        prevalence: 'common',
+        description: 'Forces purchase of premium to see likes.'
+      },
+    ],
+    sideEffects: [
+      sideEffects.find(se => se.id === 'se1')!,
+      sideEffects.find(se => se.id === 'se6')!,
+      sideEffects.find(se => se.id === 'se7')!,
+    ],
+    transparencyScore: 35,
+    icon: '❤️',
+    studies: getStudiesForProduct('Match.com'),
+    tags: ["relationships","social","premium"]
+  },
+  {
+    id: 'product85',
+    name: 'Plenty of Fish',
+    category: 'dating',
+    description: 'Online dating service.',
+    darkPatterns: [
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp5')!,
+        prevalence: 'ubiquitous',
+        description: 'Fake activity notifications about profile views.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp8')!,
+        prevalence: 'common',
+        description: 'Shames users for not upgrading to premium.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp7')!,
+        prevalence: 'common',
+        description: 'Forces purchase of premium to see likes.'
+      },
+    ],
+    sideEffects: [
+      sideEffects.find(se => se.id === 'se1')!,
+      sideEffects.find(se => se.id === 'se6')!,
+      sideEffects.find(se => se.id === 'se7')!,
+    ],
+    transparencyScore: 35,
+    icon: '🐟',
+    studies: getStudiesForProduct('Plenty of Fish'),
+    tags: ["relationships","social","premium"]
+  },
+  {
+    id: 'product86',
+    name: 'Grindr',
+    category: 'dating',
+    description: 'Geosocial networking and online dating app for LGBTQ+ people.',
+    darkPatterns: [
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp5')!,
+        prevalence: 'ubiquitous',
+        description: 'Fake activity notifications about profile views.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp8')!,
+        prevalence: 'common',
+        description: 'Shames users for not upgrading to premium.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp7')!,
+        prevalence: 'common',
+        description: 'Forces purchase of premium to see likes.'
+      },
+    ],
+    sideEffects: [
+      sideEffects.find(se => se.id === 'se1')!,
+      sideEffects.find(se => se.id === 'se6')!,
+      sideEffects.find(se => se.id === 'se7')!,
+    ],
+    transparencyScore: 35,
+    icon: '🌈',
+    studies: getStudiesForProduct('Grindr'),
+    tags: ["relationships","social","premium"]
+  },
+  {
+    id: 'product87',
+    name: 'HER',
+    category: 'dating',
+    description: 'Dating app for LGBTQ+ women and queer people.',
+    darkPatterns: [
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp5')!,
+        prevalence: 'ubiquitous',
+        description: 'Fake activity notifications about profile views.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp8')!,
+        prevalence: 'common',
+        description: 'Shames users for not upgrading to premium.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp7')!,
+        prevalence: 'common',
+        description: 'Forces purchase of premium to see likes.'
+      },
+    ],
+    sideEffects: [
+      sideEffects.find(se => se.id === 'se1')!,
+      sideEffects.find(se => se.id === 'se6')!,
+      sideEffects.find(se => se.id === 'se7')!,
+    ],
+    transparencyScore: 35,
+    icon: '👭',
+    studies: getStudiesForProduct('HER'),
+    tags: ["relationships","social","premium"]
+  },
+  {
+    id: 'product88',
+    name: 'Coffee Meets Bagel',
+    category: 'dating',
+    description: 'Dating platform that sends curated matches daily.',
+    darkPatterns: [
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp5')!,
+        prevalence: 'ubiquitous',
+        description: 'Fake activity notifications about profile views.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp8')!,
+        prevalence: 'common',
+        description: 'Shames users for not upgrading to premium.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp7')!,
+        prevalence: 'common',
+        description: 'Forces purchase of premium to see likes.'
+      },
+    ],
+    sideEffects: [
+      sideEffects.find(se => se.id === 'se1')!,
+      sideEffects.find(se => se.id === 'se6')!,
+      sideEffects.find(se => se.id === 'se7')!,
+    ],
+    transparencyScore: 35,
+    icon: '☕',
+    studies: getStudiesForProduct('Coffee Meets Bagel'),
+    tags: ["relationships","social","premium"]
+  },
+  {
+    id: 'product89',
+    name: 'eHarmony',
+    category: 'dating',
+    description: 'Online dating website.',
+    darkPatterns: [
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp5')!,
+        prevalence: 'ubiquitous',
+        description: 'Fake activity notifications about profile views.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp8')!,
+        prevalence: 'common',
+        description: 'Shames users for not upgrading to premium.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp7')!,
+        prevalence: 'common',
+        description: 'Forces purchase of premium to see likes.'
+      },
+    ],
+    sideEffects: [
+      sideEffects.find(se => se.id === 'se1')!,
+      sideEffects.find(se => se.id === 'se6')!,
+      sideEffects.find(se => se.id === 'se7')!,
+    ],
+    transparencyScore: 35,
+    icon: '💍',
+    studies: getStudiesForProduct('eHarmony'),
+    tags: ["relationships","social","premium"]
+  },
+  {
+    id: 'product90',
+    name: 'Zoosk',
+    category: 'dating',
+    description: 'Online dating platform.',
+    darkPatterns: [
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp5')!,
+        prevalence: 'ubiquitous',
+        description: 'Fake activity notifications about profile views.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp8')!,
+        prevalence: 'common',
+        description: 'Shames users for not upgrading to premium.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp7')!,
+        prevalence: 'common',
+        description: 'Forces purchase of premium to see likes.'
+      },
+    ],
+    sideEffects: [
+      sideEffects.find(se => se.id === 'se1')!,
+      sideEffects.find(se => se.id === 'se6')!,
+      sideEffects.find(se => se.id === 'se7')!,
+    ],
+    transparencyScore: 35,
+    icon: '🐾',
+    studies: getStudiesForProduct('Zoosk'),
+    tags: ["relationships","social","premium"]
+  },
+  {
+    id: 'product91',
+    name: 'Microsoft Teams',
+    category: 'productivity',
+    description: 'Business communication platform.',
+    darkPatterns: [
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp7')!,
+        prevalence: 'common',
+        description: 'Forces constant availability through notifications.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp4')!,
+        prevalence: 'common',
+        description: 'Urgent notification badges create workplace anxiety.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp8')!,
+        prevalence: 'rare',
+        description: 'Confirmshaming when declining productivity features.'
+      },
+    ],
+    sideEffects: [
+      sideEffects.find(se => se.id === 'se1')!,
+      sideEffects.find(se => se.id === 'se3')!,
+      sideEffects.find(se => se.id === 'se8')!,
+    ],
+    transparencyScore: 75,
+    icon: '💼',
+    studies: getStudiesForProduct('Microsoft Teams'),
+    tags: ["work","tools","organization"]
+  },
+  {
+    id: 'product92',
+    name: 'Zoom',
+    category: 'productivity',
+    description: 'Video conferencing platform.',
+    darkPatterns: [
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp7')!,
+        prevalence: 'common',
+        description: 'Forces constant availability through notifications.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp4')!,
+        prevalence: 'common',
+        description: 'Urgent notification badges create workplace anxiety.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp8')!,
+        prevalence: 'rare',
+        description: 'Confirmshaming when declining productivity features.'
+      },
+    ],
+    sideEffects: [
+      sideEffects.find(se => se.id === 'se1')!,
+      sideEffects.find(se => se.id === 'se3')!,
+      sideEffects.find(se => se.id === 'se8')!,
+    ],
+    transparencyScore: 75,
+    icon: '📹',
+    studies: getStudiesForProduct('Zoom'),
+    tags: ["work","tools","organization"]
+  },
+  {
+    id: 'product93',
+    name: 'Asana',
+    category: 'productivity',
+    description: 'Work management platform.',
+    darkPatterns: [
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp7')!,
+        prevalence: 'common',
+        description: 'Forces constant availability through notifications.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp4')!,
+        prevalence: 'common',
+        description: 'Urgent notification badges create workplace anxiety.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp8')!,
+        prevalence: 'rare',
+        description: 'Confirmshaming when declining productivity features.'
+      },
+    ],
+    sideEffects: [
+      sideEffects.find(se => se.id === 'se1')!,
+      sideEffects.find(se => se.id === 'se3')!,
+      sideEffects.find(se => se.id === 'se8')!,
+    ],
+    transparencyScore: 75,
+    icon: '📋',
+    studies: getStudiesForProduct('Asana'),
+    tags: ["work","tools","organization"]
+  },
+  {
+    id: 'product94',
+    name: 'Trello',
+    category: 'productivity',
+    description: 'Web-based list-making application.',
+    darkPatterns: [
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp7')!,
+        prevalence: 'common',
+        description: 'Forces constant availability through notifications.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp4')!,
+        prevalence: 'common',
+        description: 'Urgent notification badges create workplace anxiety.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp8')!,
+        prevalence: 'rare',
+        description: 'Confirmshaming when declining productivity features.'
+      },
+    ],
+    sideEffects: [
+      sideEffects.find(se => se.id === 'se1')!,
+      sideEffects.find(se => se.id === 'se3')!,
+      sideEffects.find(se => se.id === 'se8')!,
+    ],
+    transparencyScore: 75,
+    icon: '📝',
+    studies: getStudiesForProduct('Trello'),
+    tags: ["work","tools","organization"]
+  },
+  {
+    id: 'product95',
+    name: 'Notion',
+    category: 'productivity',
+    description: 'Project management and note-taking software.',
+    darkPatterns: [
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp7')!,
+        prevalence: 'common',
+        description: 'Forces constant availability through notifications.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp4')!,
+        prevalence: 'common',
+        description: 'Urgent notification badges create workplace anxiety.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp8')!,
+        prevalence: 'rare',
+        description: 'Confirmshaming when declining productivity features.'
+      },
+    ],
+    sideEffects: [
+      sideEffects.find(se => se.id === 'se1')!,
+      sideEffects.find(se => se.id === 'se3')!,
+      sideEffects.find(se => se.id === 'se8')!,
+    ],
+    transparencyScore: 75,
+    icon: '📓',
+    studies: getStudiesForProduct('Notion'),
+    tags: ["work","tools","organization"]
+  },
+  {
+    id: 'product96',
+    name: 'Evernote',
+    category: 'productivity',
+    description: 'Note-taking app.',
+    darkPatterns: [
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp7')!,
+        prevalence: 'common',
+        description: 'Forces constant availability through notifications.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp4')!,
+        prevalence: 'common',
+        description: 'Urgent notification badges create workplace anxiety.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp8')!,
+        prevalence: 'rare',
+        description: 'Confirmshaming when declining productivity features.'
+      },
+    ],
+    sideEffects: [
+      sideEffects.find(se => se.id === 'se1')!,
+      sideEffects.find(se => se.id === 'se3')!,
+      sideEffects.find(se => se.id === 'se8')!,
+    ],
+    transparencyScore: 75,
+    icon: '📒',
+    studies: getStudiesForProduct('Evernote'),
+    tags: ["work","tools","organization"]
+  },
+  {
+    id: 'product97',
+    name: 'Google Workspace',
+    category: 'productivity',
+    description: 'Cloud-based productivity and collaboration tools.',
+    darkPatterns: [
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp7')!,
+        prevalence: 'common',
+        description: 'Forces constant availability through notifications.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp4')!,
+        prevalence: 'common',
+        description: 'Urgent notification badges create workplace anxiety.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp8')!,
+        prevalence: 'rare',
+        description: 'Confirmshaming when declining productivity features.'
+      },
+    ],
+    sideEffects: [
+      sideEffects.find(se => se.id === 'se1')!,
+      sideEffects.find(se => se.id === 'se3')!,
+      sideEffects.find(se => se.id === 'se8')!,
+    ],
+    transparencyScore: 75,
+    icon: '🔧',
+    studies: getStudiesForProduct('Google Workspace'),
+    tags: ["work","tools","organization"]
+  },
+  {
+    id: 'product98',
+    name: 'Microsoft Office',
+    category: 'productivity',
+    description: 'Suite of productivity applications.',
+    darkPatterns: [
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp7')!,
+        prevalence: 'common',
+        description: 'Forces constant availability through notifications.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp4')!,
+        prevalence: 'common',
+        description: 'Urgent notification badges create workplace anxiety.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp8')!,
+        prevalence: 'rare',
+        description: 'Confirmshaming when declining productivity features.'
+      },
+    ],
+    sideEffects: [
+      sideEffects.find(se => se.id === 'se1')!,
+      sideEffects.find(se => se.id === 'se3')!,
+      sideEffects.find(se => se.id === 'se8')!,
+    ],
+    transparencyScore: 75,
+    icon: '📎',
+    studies: getStudiesForProduct('Microsoft Office'),
+    tags: ["work","tools","organization"]
+  },
+  {
+    id: 'product99',
+    name: 'ClickUp',
+    category: 'productivity',
+    description: 'Productivity platform for task management.',
+    darkPatterns: [
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp7')!,
+        prevalence: 'common',
+        description: 'Forces constant availability through notifications.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp4')!,
+        prevalence: 'common',
+        description: 'Urgent notification badges create workplace anxiety.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp8')!,
+        prevalence: 'rare',
+        description: 'Confirmshaming when declining productivity features.'
+      },
+    ],
+    sideEffects: [
+      sideEffects.find(se => se.id === 'se1')!,
+      sideEffects.find(se => se.id === 'se3')!,
+      sideEffects.find(se => se.id === 'se8')!,
+    ],
+    transparencyScore: 75,
+    icon: '⬆️',
+    studies: getStudiesForProduct('ClickUp'),
+    tags: ["work","tools","organization"]
+  },
+  {
+    id: 'product100',
+    name: 'Monday.com',
+    category: 'productivity',
+    description: 'Work operating system.',
+    darkPatterns: [
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp7')!,
+        prevalence: 'common',
+        description: 'Forces constant availability through notifications.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp4')!,
+        prevalence: 'common',
+        description: 'Urgent notification badges create workplace anxiety.'
+      },
+      {
+        pattern: darkPatterns.find(dp => dp.id === 'dp8')!,
+        prevalence: 'rare',
+        description: 'Confirmshaming when declining productivity features.'
+      },
+    ],
+    sideEffects: [
+      sideEffects.find(se => se.id === 'se1')!,
+      sideEffects.find(se => se.id === 'se3')!,
+      sideEffects.find(se => se.id === 'se8')!,
+    ],
+    transparencyScore: 75,
+    icon: '📅',
+    studies: getStudiesForProduct('Monday.com'),
+    tags: ["work","tools","organization"]
+  }
+];
+
+export default products;

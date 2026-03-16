@@ -1,0 +1,9 @@
+# Fastlane Pluginfile for DigitalOasis
+
+# Optional plugins (uncomment if needed)
+# gem 'fastlane-plugin-expo', '~> 0.1'
+# gem 'fastlane-plugin-app_store_connect', '~> 0.2'
+# gem 'fastlane-plugin-in_app_purchase', '~> 0.2'
+
+# Note: This project uses built-in Fastlane features (spaceship)
+# for App Store Connect API access instead of plugins

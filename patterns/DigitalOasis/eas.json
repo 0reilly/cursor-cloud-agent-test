@@ -1,0 +1,28 @@
+{
+  "cli": {
+    "version": ">= 3.0.0"
+  },
+  "build": {
+    "development": {
+      "developmentClient": true,
+      "distribution": "internal",
+      "env": {
+        "EXPO_PUBLIC_ENABLE_IAP_SANDBOX": "true"
+      }
+    },
+    "preview": {
+      "distribution": "internal",
+      "env": {
+        "EXPO_PUBLIC_ENABLE_IAP_SANDBOX": "true"
+      }
+    },
+    "production": {
+      "env": {
+        "EXPO_PUBLIC_ENABLE_IAP_SANDBOX": "false"
+      }
+    }
+  },
+  "submit": {
+    "production": {}
+  }
+}

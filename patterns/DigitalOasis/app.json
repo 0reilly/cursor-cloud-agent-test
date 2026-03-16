@@ -1,0 +1,40 @@
+{
+  "expo": {
+    "name": "Patterns",
+    "slug": "patterns",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "light",
+
+    "splash": {
+      "image": "./assets/splash-icon.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#ffffff"
+    },
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "app.digitaloasis.ios",
+      "infoPlist": {}
+    },
+    "android": {
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#ffffff"
+      },
+      "edgeToEdgeEnabled": true,
+      "predictiveBackGestureEnabled": false,
+      "package": "app.digitaloasis.android"
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
+    },
+    "description": "Patterns reveals dark patterns and side effects in digital products.",
+    "githubUrl": "https://github.com/yourusername/digital-oasis",
+    "plugins": [
+      ["expo-superwall", {
+        "apiKey": "sk_d8bba08c51a3a2029e4462ac3126a3e78620554a6dc0202160529eafff0da170"
+      }]
+    ]
+  }
+}

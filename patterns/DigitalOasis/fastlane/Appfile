@@ -1,0 +1,24 @@
+# Appfile configuration for DigitalOasis
+
+# Apple ID and Team IDs
+apple_id("amo0795@yahoo.com") # Your Apple Developer email
+team_id("UAN7K979Q3") # Your Apple Developer Team ID
+
+# App identifiers
+app_identifier("app.digitaloasis.ios") # Bundle identifier from app.json
+apple_dev_portal_id("app.digitaloasis.ios")
+
+# For App Store Connect API (recommended)
+# Generate API key from App Store Connect
+# itc_team_id("YOUR_ITC_TEAM_ID")
+# api_key(
+#   key_id: "API_KEY_ID",
+#   issuer_id: "API_KEY_ISSUER_ID",
+#   key_filepath: "./AuthKey_API_KEY_ID.p8",
+#   duration: 1200,
+#   in_house: false
+# )
+
+# Android configuration
+# json_key_file("./google-play-key.json")
+# package_name("app.digitaloasis.android")
