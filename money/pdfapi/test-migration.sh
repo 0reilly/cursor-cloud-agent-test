@@ -21,7 +21,7 @@ echo "   ✓ Health endpoint OK: $HEALTH_RESPONSE"
 # 2. Check security headers
 echo "2. Testing security headers..."
 HEADERS=$(curl -s -I "$API_BASE_URL/health")
-if echo "$HEADERS" | grep -q "X-Content-Type-Options: nosniff"; then
+if echo "$HEADERS" | grep -i -q "X-Content-Type-Options: nosniff"; then
   echo "   ✓ Security headers present"
 else
   echo "   ⚠ Missing some security headers"
