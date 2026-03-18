@@ -8,15 +8,17 @@ A production-ready PDF processing API with Stripe subscriptions. Process PDFs wi
 - **PDF processing**: Watermark removal, text extraction, batch processing
 - **Secure authentication**: API key-based authentication using Stripe Customer IDs
 - **Usage tracking**: Monthly limits per subscription tier
-- **Production-ready**: Dockerized, deployed on Fly.io, health checks
+- **Production-ready**: Dockerized, deployed on Fly.io, health checks, security headers, rate limiting, compression
 
 ## Tech Stack
 
 - **Backend**: Node.js, Express
 - **Payments**: Stripe (subscriptions, checkout, webhooks)
-- **PDF Processing**: pdf-lib
-- **Deployment**: Fly.io, Docker
-- **Monitoring**: Health checks, usage tracking
+- **PDF Processing**: pdf-lib, pdf-parse
+- **Security**: Helmet.js (security headers), CORS, rate limiting
+- **Monitoring**: Morgan (HTTP logging), request ID tracking, metrics endpoint
+- **Deployment**: Fly.io, Docker, compression middleware
+- **Database**: SQLite (usage tracking), in-memory caching
 
 ## Live Deployment
 
@@ -30,6 +32,7 @@ A production-ready PDF processing API with Stripe subscriptions. Process PDFs wi
 
 - `GET /` - Landing page with pricing and checkout
 - `GET /health` - Health check
+- `GET /metrics` - Application metrics and monitoring data
 - `POST /create-checkout-session` - Create Stripe checkout session
 
 ### Authenticated Endpoints
@@ -150,10 +153,13 @@ Currently running in **Stripe test mode**. To accept real payments:
 
 ## Monitoring
 
-- Health check: `GET /health`
-- Fly.io monitoring dashboard
-- Stripe dashboard for payments/subscriptions
-- Server logs: `flyctl logs`
+- **Health check**: `GET /health` - API status
+- **Metrics endpoint**: `GET /metrics` - Request statistics, memory usage, uptime
+- **Security headers**: Helmet.js provides comprehensive security headers
+- **Request tracking**: UUID request IDs for distributed tracing
+- **Fly.io dashboard**: Application metrics and logs
+- **Stripe dashboard**: Payments and subscription analytics
+- **Server logs**: `flyctl logs` for real-time debugging
 
 ## Revenue Model
 
