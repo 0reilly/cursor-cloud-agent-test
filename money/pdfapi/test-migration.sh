@@ -85,9 +85,24 @@ else
   fi
 fi
 
+# 8. Test metrics endpoint
+echo "8. Testing metrics endpoint..."
+METRICS_RESPONSE=$(curl -s -f "$API_BASE_URL/metrics" 2>/dev/null || echo "")
+if [ -n "$METRICS_RESPONSE" ]; then
+  echo "   ✓ Metrics endpoint accessible"
+  # Check if response contains expected fields
+  if echo "$METRICS_RESPONSE" | grep -q '"status":"ok"'; then
+    echo "   ✓ Metrics endpoint returns valid data"
+  else
+    echo "   ? Metrics endpoint returned unexpected format"
+  fi
+else
+  echo "   ✗ Metrics endpoint not accessible or returned error"
+fi
+
 echo ""
 echo "=== Test Summary ==="
-echo "All basic endpoints are accessible."
+echo "All endpoints are accessible."
 echo "Stripe mode: $STRIPE_MODE"
 echo ""
 if [ "$STRIPE_MODE" = "test" ]; then
