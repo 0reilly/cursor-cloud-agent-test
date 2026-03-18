@@ -1,0 +1,10 @@
+[dotenv@17.3.1] injecting env (5) from .env -- tip: ⚙️  write to custom object with { processEnv: myObject }
+Monthly usage reset (demo mode)
+PDF Processor API running on port 3000
+Environment: development
+Stripe account: [object Object]
+Usage recorded: customer cus_UAjY6A7QNzrQuR (free), count: 1
+Usage recorded: customer cus_UAjY6A7QNzrQuR (free), count: 2
+Usage recorded: customer cus_UAjY6A7QNzrQuR (free), count: 3
+Usage recorded: customer cus_UAjY6A7QNzrQuR (free), count: 4
+Usage recorded: customer cus_UAjY6A7QNzrQuR (free), count: 5

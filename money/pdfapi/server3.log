@@ -1,0 +1,4 @@
+[dotenv@17.3.1] injecting env (5) from .env -- tip: ⚙️  enable debug logging with { debug: true }
+PDF Processor API running on port 3000
+Environment: development
+Stripe account: [object Object]

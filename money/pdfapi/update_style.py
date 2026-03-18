@@ -1,0 +1,301 @@
+import re
+
+with open('public/index.html', 'r') as f:
+    html = f.read()
+
+# Add Google Fonts link before style
+if 'fonts.googleapis.com' not in html:
+    # Insert after <head> and before <style>
+    html = html.replace('<head>', '<head>\n    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">')
+
+# New CSS
+new_style = '''    <style>
+        :root {
+            --primary: #667eea;
+            --primary-dark: #764ba2;
+            --secondary: #f093fb;
+            --secondary-dark: #f5576c;
+            --light: #f8fafc;
+            --dark: #1e293b;
+            --gray: #64748b;
+            --card-bg: rgba(255, 255, 255, 0.9);
+            --shadow: 0 20px 40px rgba(0, 0, 0, 0.1);
+            --glass-bg: rgba(255, 255, 255, 0.2);
+            --glass-border: rgba(255, 255, 255, 0.3);
+        }
+        @media (prefers-color-scheme: dark) {
+            :root {
+                --light: #1e293b;
+                --dark: #f8fafc;
+                --gray: #94a3b8;
+                --card-bg: rgba(30, 41, 59, 0.9);
+                --shadow: 0 20px 40px rgba(0, 0, 0, 0.3);
+                --glass-bg: rgba(30, 41, 59, 0.3);
+                --glass-border: rgba(255, 255, 255, 0.1);
+            }
+        }
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+        }
+        body {
+            background: linear-gradient(135deg, var(--primary) 0%, var(--primary-dark) 100%);
+            min-height: 100vh;
+            padding: 40px 20px;
+            color: var(--dark);
+            transition: background 0.3s ease;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+        header {
+            text-align: center;
+            margin-bottom: 60px;
+            padding: 40px 20px;
+            background: var(--glass-bg);
+            backdrop-filter: blur(10px);
+            border-radius: 24px;
+            border: 1px solid var(--glass-border);
+            box-shadow: var(--shadow);
+        }
+        h1 {
+            font-size: 4rem;
+            font-weight: 800;
+            background: linear-gradient(90deg, #ffffff 0%, #e2e8f0 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            margin-bottom: 20px;
+            letter-spacing: -0.05em;
+        }
+        .subtitle {
+            font-size: 1.25rem;
+            color: rgba(255, 255, 255, 0.9);
+            max-width: 700px;
+            margin: 0 auto 30px;
+            line-height: 1.6;
+            font-weight: 400;
+        }
+        .features {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+            gap: 30px;
+            margin-bottom: 60px;
+        }
+        .feature {
+            background: var(--card-bg);
+            padding: 40px 30px;
+            border-radius: 24px;
+            box-shadow: var(--shadow);
+            transition: all 0.3s ease;
+            border: 1px solid transparent;
+            backdrop-filter: blur(10px);
+        }
+        .feature:hover {
+            transform: translateY(-10px);
+            border-color: var(--glass-border);
+            box-shadow: 0 30px 60px rgba(0, 0, 0, 0.15);
+        }
+        .feature h3 {
+            color: var(--primary);
+            margin-bottom: 15px;
+            font-size: 1.5rem;
+            font-weight: 700;
+        }
+        .feature p {
+            color: var(--gray);
+            line-height: 1.6;
+        }
+        .pricing {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+            gap: 40px;
+            margin-bottom: 60px;
+        }
+        .plan {
+            background: var(--card-bg);
+            border-radius: 24px;
+            overflow: hidden;
+            box-shadow: var(--shadow);
+            transition: all 0.3s ease;
+            border: 2px solid transparent;
+            backdrop-filter: blur(10px);
+            display: flex;
+            flex-direction: column;
+        }
+        .plan:hover {
+            transform: translateY(-15px);
+            border-color: var(--primary);
+        }
+        .plan.popular {
+            border-color: var(--primary);
+            position: relative;
+        }
+        .plan.popular::before {
+            content: "MOST POPULAR";
+            position: absolute;
+            top: 20px;
+            right: -40px;
+            background: var(--secondary);
+            color: white;
+            padding: 8px 40px;
+            transform: rotate(45deg);
+            font-size: 0.75rem;
+            font-weight: 700;
+            letter-spacing: 1px;
+        }
+        .plan-header {
+            padding: 40px 30px;
+            text-align: center;
+            background: linear-gradient(90deg, var(--primary) 0%, var(--primary-dark) 100%);
+            color: white;
+        }
+        .plan.popular .plan-header {
+            background: linear-gradient(90deg, var(--secondary) 0%, var(--secondary-dark) 100%);
+        }
+        .plan-name {
+            font-size: 2rem;
+            font-weight: 800;
+            margin-bottom: 10px;
+            letter-spacing: -0.02em;
+        }
+        .plan-price {
+            font-size: 4rem;
+            font-weight: 900;
+            margin-bottom: 5px;
+            line-height: 1;
+        }
+        .plan-period {
+            font-size: 1rem;
+            opacity: 0.9;
+            font-weight: 500;
+        }
+        .plan-features {
+            padding: 40px 30px;
+            list-style: none;
+            flex-grow: 1;
+        }
+        .plan-features li {
+            padding: 12px 0;
+            border-bottom: 1px solid rgba(0,0,0,0.05);
+            display: flex;
+            align-items: center;
+            color: var(--dark);
+            font-weight: 500;
+        }
+        .plan-features li:before {
+            content: "✓";
+            color: var(--primary);
+            font-weight: bold;
+            margin-right: 12px;
+            font-size: 1.2rem;
+        }
+        .plan-button {
+            display: block;
+            margin: 0 30px 30px;
+            padding: 20px;
+            text-align: center;
+            background: linear-gradient(90deg, var(--primary) 0%, var(--primary-dark) 100%);
+            color: white;
+            text-decoration: none;
+            border-radius: 16px;
+            font-weight: 700;
+            font-size: 1.1rem;
+            transition: all 0.3s ease;
+            border: none;
+            cursor: pointer;
+            letter-spacing: 0.5px;
+        }
+        .plan-button:hover {
+            opacity: 0.95;
+            transform: scale(1.02);
+            box-shadow: 0 10px 25px rgba(102, 126, 234, 0.4);
+        }
+        .plan.popular .plan-button {
+            background: linear-gradient(90deg, var(--secondary) 0%, var(--secondary-dark) 100%);
+        }
+        .api-docs {
+            background: var(--card-bg);
+            padding: 50px;
+            border-radius: 24px;
+            margin-top: 80px;
+            box-shadow: var(--shadow);
+            backdrop-filter: blur(10px);
+            border: 1px solid var(--glass-border);
+        }
+        .api-docs h2 {
+            color: var(--primary);
+            margin-bottom: 25px;
+            font-size: 2.5rem;
+            font-weight: 800;
+        }
+        .api-docs p {
+            color: var(--gray);
+            margin-bottom: 20px;
+            line-height: 1.6;
+        }
+        code, pre {
+            background: rgba(0,0,0,0.05);
+            padding: 12px 18px;
+            border-radius: 12px;
+            font-family: 'Courier New', monospace;
+            color: var(--dark);
+            border: 1px solid var(--glass-border);
+            overflow-x: auto;
+        }
+        pre {
+            margin: 20px 0;
+        }
+        footer {
+            text-align: center;
+            color: rgba(255, 255, 255, 0.8);
+            font-size: 0.9rem;
+            padding-top: 60px;
+            border-top: 1px solid var(--glass-border);
+            margin-top: 60px;
+        }
+        footer a {
+            color: white;
+            text-decoration: none;
+            font-weight: 600;
+        }
+        footer a:hover {
+            text-decoration: underline;
+        }
+        .alert {
+            padding: 20px;
+            background: rgba(255, 243, 205, 0.9);
+            border: 1px solid rgba(255, 234, 167, 0.8);
+            border-radius: 12px;
+            margin-bottom: 30px;
+            color: #856404;
+            backdrop-filter: blur(10px);
+        }
+        @media (max-width: 768px) {
+            h1 {
+                font-size: 2.8rem;
+            }
+            .pricing {
+                grid-template-columns: 1fr;
+            }
+            .plan.popular::before {
+                right: -30px;
+                padding: 6px 30px;
+                font-size: 0.7rem;
+            }
+            .api-docs {
+                padding: 30px 20px;
+            }
+        }
+    </style>'''
+
+# Replace old style block
+pattern = r'<style>.*?</style>'
+html = re.sub(pattern, new_style, html, flags=re.DOTALL)
+
+with open('public/index.html', 'w') as f:
+    f.write(html)
+
+print('Updated index.html with new design')

@@ -1,0 +1,350 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Customer Dashboard - PDF Processor API</title>
+    <style>
+        :root {
+            --primary: #667eea;
+            --primary-dark: #764ba2;
+            --secondary: #f093fb;
+            --secondary-dark: #f5576c;
+            --light: #f8fafc;
+            --dark: #1e293b;
+            --gray: #64748b;
+            --card-bg: rgba(255, 255, 255, 0.9);
+            --shadow: 0 20px 40px rgba(0, 0, 0, 0.1);
+            --glass-bg: rgba(255, 255, 255, 0.2);
+            --glass-border: rgba(255, 255, 255, 0.3);
+        }
+        @media (prefers-color-scheme: dark) {
+            :root {
+                --light: #1e293b;
+                --dark: #f8fafc;
+                --gray: #94a3b8;
+                --card-bg: rgba(30, 41, 59, 0.9);
+                --shadow: 0 20px 40px rgba(0, 0, 0, 0.3);
+                --glass-bg: rgba(30, 41, 59, 0.3);
+                --glass-border: rgba(255, 255, 255, 0.1);
+            }
+        }
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+        }
+        body {
+            background: linear-gradient(135deg, var(--primary) 0%, var(--primary-dark) 100%);
+            min-height: 100vh;
+            padding: 40px 20px;
+            color: var(--dark);
+            transition: background 0.3s ease;
+        }
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+        }
+        header {
+            text-align: center;
+            margin-bottom: 40px;
+        }
+        h1 {
+            font-size: 3rem;
+            font-weight: 800;
+            margin-bottom: 10px;
+            color: white;
+            text-shadow: 0 2px 10px rgba(0,0,0,0.2);
+        }
+        .subtitle {
+            font-size: 1.2rem;
+            color: rgba(255,255,255,0.8);
+            margin-bottom: 30px;
+        }
+        .card {
+            background: var(--card-bg);
+            border-radius: 24px;
+            padding: 32px;
+            box-shadow: var(--shadow);
+            margin-bottom: 30px;
+            backdrop-filter: blur(10px);
+            border: 1px solid var(--glass-border);
+        }
+        .card h2 {
+            font-size: 1.8rem;
+            margin-bottom: 20px;
+            color: var(--dark);
+        }
+        .input-section {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 20px;
+            align-items: center;
+        }
+        input[type="password"] {
+            flex: 1;
+            padding: 12px 20px;
+            border-radius: 12px;
+            border: 2px solid var(--glass-border);
+            background: var(--glass-bg);
+            color: var(--dark);
+            font-size: 1rem;
+            outline: none;
+            transition: border-color 0.3s;
+        }
+        input[type="password"]:focus {
+            border-color: var(--primary);
+        }
+        button {
+            padding: 12px 24px;
+            border-radius: 12px;
+            border: none;
+            background: linear-gradient(135deg, var(--primary) 0%, var(--primary-dark) 100%);
+            color: white;
+            font-weight: 600;
+            font-size: 1rem;
+            cursor: pointer;
+            transition: transform 0.2s, box-shadow 0.2s;
+            box-shadow: 0 4px 15px rgba(102, 126, 234, 0.4);
+        }
+        button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 25px rgba(102, 126, 234, 0.6);
+        }
+        button:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+            transform: none;
+        }
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+        .stat-card {
+            background: var(--glass-bg);
+            border-radius: 16px;
+            padding: 24px;
+            text-align: center;
+            border: 1px solid var(--glass-border);
+        }
+        .stat-card .value {
+            font-size: 3rem;
+            font-weight: 800;
+            color: var(--primary);
+            line-height: 1;
+            margin-bottom: 10px;
+        }
+        .stat-card .label {
+            font-size: 1rem;
+            color: var(--gray);
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+        .progress-container {
+            margin-top: 30px;
+        }
+        .progress-bar {
+            height: 24px;
+            background: var(--glass-bg);
+            border-radius: 12px;
+            overflow: hidden;
+            border: 1px solid var(--glass-border);
+            margin-bottom: 10px;
+        }
+        .progress-fill {
+            height: 100%;
+            background: linear-gradient(90deg, var(--primary), var(--primary-dark));
+            border-radius: 12px;
+            transition: width 0.5s ease;
+        }
+        .progress-labels {
+            display: flex;
+            justify-content: space-between;
+            font-size: 0.9rem;
+            color: var(--gray);
+        }
+        .error {
+            background: rgba(239, 68, 68, 0.1);
+            border: 1px solid rgba(239, 68, 68, 0.3);
+            color: #ef4444;
+            padding: 16px;
+            border-radius: 12px;
+            margin-bottom: 20px;
+            display: none;
+        }
+        .success {
+            background: rgba(34, 197, 94, 0.1);
+            border: 1px solid rgba(34, 197, 94, 0.3);
+            color: #22c55e;
+            padding: 16px;
+            border-radius: 12px;
+            margin-bottom: 20px;
+            display: none;
+        }
+        .loading {
+            text-align: center;
+            padding: 40px;
+            color: var(--gray);
+            font-size: 1.2rem;
+        }
+        .hidden {
+            display: none;
+        }
+        .timestamp {
+            font-size: 0.9rem;
+            color: var(--gray);
+            text-align: center;
+            margin-top: 20px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>Customer Dashboard</h1>
+            <p class="subtitle">Monitor your PDF processing usage</p>
+        </header>
+
+        <div class="card">
+            <h2>Authentication</h2>
+            <div class="input-section">
+                <input type="password" id="apiKey" placeholder="Enter your API Key (Stripe Customer ID)" />
+                <button id="saveApiKey">Save API Key</button>
+            </div>
+            <div class="error" id="keyError"></div>
+            <div class="success" id="keySuccess">API key saved. Click "Load Usage Data" to fetch your usage.</div>
+        </div>
+
+        <div class="card hidden" id="dataSection">
+            <h2>Usage Overview</h2>
+            <button id="refreshData">Load Usage Data</button>
+            <div class="error" id="dataError"></div>
+            <div class="loading hidden" id="loading">Fetching data...</div>
+
+            <div id="usageData" class="hidden">
+                <div class="stats-grid">
+                    <div class="stat-card">
+                        <div class="value" id="usageCount">0</div>
+                        <div class="label">PDFs Processed</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="value" id="tier">Free</div>
+                        <div class="label">Current Tier</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="value" id="monthlyLimit">∞</div>
+                        <div class="label">Monthly Limit</div>
+                    </div>
+                </div>
+
+                <div class="progress-container">
+                    <h3>Monthly Usage</h3>
+                    <div class="progress-bar">
+                        <div class="progress-fill" id="progressFill" style="width: 0%"></div>
+                    </div>
+                    <div class="progress-labels">
+                        <span id="currentUsage">0</span>
+                        <span id="percent">0%</span>
+                        <span id="limitLabel">∞</span>
+                    </div>
+                </div>
+
+                <div class="timestamp">Data fetched at <span id="timestamp">-</span></div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const API_KEY_STORAGE = 'pdfapi_customer_key';
+        const apiKeyInput = document.getElementById('apiKey');
+        const saveApiKeyBtn = document.getElementById('saveApiKey');
+        const keyError = document.getElementById('keyError');
+        const keySuccess = document.getElementById('keySuccess');
+        const dataSection = document.getElementById('dataSection');
+        const refreshDataBtn = document.getElementById('refreshData');
+        const dataError = document.getElementById('dataError');
+        const loading = document.getElementById('loading');
+        const usageDataDiv = document.getElementById('usageData');
+
+        // Load saved API key
+        const savedApiKey = localStorage.getItem(API_KEY_STORAGE);
+        if (savedApiKey) {
+            apiKeyInput.value = savedApiKey;
+            keySuccess.style.display = 'block';
+            dataSection.classList.remove('hidden');
+        }
+
+        saveApiKeyBtn.addEventListener('click', () => {
+            const key = apiKeyInput.value.trim();
+            if (!key) {
+                keyError.textContent = 'Please enter your API key.';
+                keyError.style.display = 'block';
+                return;
+            }
+            localStorage.setItem(API_KEY_STORAGE, key);
+            keyError.style.display = 'none';
+            keySuccess.style.display = 'block';
+            dataSection.classList.remove('hidden');
+        });
+
+        refreshDataBtn.addEventListener('click', loadUsageData);
+
+        async function loadUsageData() {
+            const apiKey = localStorage.getItem(API_KEY_STORAGE);
+            if (!apiKey) {
+                dataError.textContent = 'No API key saved. Please enter your API key first.';
+                dataError.style.display = 'block';
+                return;
+            }
+
+            loading.classList.remove('hidden');
+            usageDataDiv.classList.add('hidden');
+            dataError.style.display = 'none';
+
+            try {
+                const response = await fetch('/customer/usage', {
+                    headers: { 'X-API-Key': apiKey }
+                });
+                if (!response.ok) {
+                    if (response.status === 401) {
+                        throw new Error('Invalid API key. Please check your key and try again.');
+                    }
+                    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                }
+                const data = await response.json();
+
+                // Update UI
+                document.getElementById('usageCount').textContent = data.count;
+                document.getElementById('tier').textContent = data.tier.charAt(0).toUpperCase() + data.tier.slice(1);
+                const limit = data.limit;
+                const limitText = limit === null ? '∞' : limit;
+                document.getElementById('monthlyLimit').textContent = limitText;
+
+                // Progress bar
+                const percent = limit === null || limit === 0 ? 0 : Math.min(100, (data.count / limit) * 100);
+                document.getElementById('progressFill').style.width = percent + '%';
+                document.getElementById('currentUsage').textContent = data.count;
+                document.getElementById('percent').textContent = percent.toFixed(1) + '%';
+                document.getElementById('limitLabel').textContent = limitText;
+
+                document.getElementById('timestamp').textContent = new Date(data.timestamp).toLocaleString();
+                usageDataDiv.classList.remove('hidden');
+            } catch (err) {
+                dataError.textContent = 'Failed to load usage data: ' + err.message;
+                dataError.style.display = 'block';
+            } finally {
+                loading.classList.add('hidden');
+            }
+        }
+
+        // Auto-load if API key already saved
+        if (savedApiKey) {
+            loadUsageData();
+        }
+    </script>
+</body>
+</html>

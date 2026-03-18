@@ -1,0 +1,387 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Admin Dashboard - PDF Processor API</title>
+    <style>
+        :root {
+            --primary: #667eea;
+            --primary-dark: #764ba2;
+            --secondary: #f093fb;
+            --secondary-dark: #f5576c;
+            --light: #f8fafc;
+            --dark: #1e293b;
+            --gray: #64748b;
+            --card-bg: rgba(255, 255, 255, 0.9);
+            --shadow: 0 20px 40px rgba(0, 0, 0, 0.1);
+            --glass-bg: rgba(255, 255, 255, 0.2);
+            --glass-border: rgba(255, 255, 255, 0.3);
+        }
+        @media (prefers-color-scheme: dark) {
+            :root {
+                --light: #1e293b;
+                --dark: #f8fafc;
+                --gray: #94a3b8;
+                --card-bg: rgba(30, 41, 59, 0.9);
+                --shadow: 0 20px 40px rgba(0, 0, 0, 0.3);
+                --glass-bg: rgba(30, 41, 59, 0.3);
+                --glass-border: rgba(255, 255, 255, 0.1);
+            }
+        }
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+        }
+        body {
+            background: linear-gradient(135deg, var(--primary) 0%, var(--primary-dark) 100%);
+            min-height: 100vh;
+            padding: 40px 20px;
+            color: var(--dark);
+            transition: background 0.3s ease;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+        header {
+            text-align: center;
+            margin-bottom: 40px;
+        }
+        h1 {
+            font-size: 3rem;
+            font-weight: 800;
+            margin-bottom: 10px;
+            color: white;
+            text-shadow: 0 2px 10px rgba(0,0,0,0.2);
+        }
+        .subtitle {
+            font-size: 1.2rem;
+            color: rgba(255,255,255,0.8);
+            margin-bottom: 30px;
+        }
+        .card {
+            background: var(--card-bg);
+            border-radius: 24px;
+            padding: 32px;
+            box-shadow: var(--shadow);
+            margin-bottom: 30px;
+            backdrop-filter: blur(10px);
+            border: 1px solid var(--glass-border);
+        }
+        .card h2 {
+            font-size: 1.8rem;
+            margin-bottom: 20px;
+            color: var(--dark);
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        .card h2 svg {
+            width: 28px;
+            height: 28px;
+        }
+        .token-section {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 30px;
+            align-items: center;
+        }
+        input[type="password"] {
+            flex: 1;
+            padding: 12px 20px;
+            border-radius: 12px;
+            border: 2px solid var(--glass-border);
+            background: var(--glass-bg);
+            color: var(--dark);
+            font-size: 1rem;
+            outline: none;
+            transition: border-color 0.3s;
+        }
+        input[type="password"]:focus {
+            border-color: var(--primary);
+        }
+        button {
+            padding: 12px 24px;
+            border-radius: 12px;
+            border: none;
+            background: linear-gradient(135deg, var(--primary) 0%, var(--primary-dark) 100%);
+            color: white;
+            font-weight: 600;
+            font-size: 1rem;
+            cursor: pointer;
+            transition: transform 0.2s, box-shadow 0.2s;
+            box-shadow: 0 4px 15px rgba(102, 126, 234, 0.4);
+        }
+        button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 25px rgba(102, 126, 234, 0.6);
+        }
+        button:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+            transform: none;
+        }
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+        .stat-card {
+            background: var(--glass-bg);
+            border-radius: 16px;
+            padding: 24px;
+            text-align: center;
+            border: 1px solid var(--glass-border);
+        }
+        .stat-card .value {
+            font-size: 3rem;
+            font-weight: 800;
+            color: var(--primary);
+            line-height: 1;
+            margin-bottom: 10px;
+        }
+        .stat-card .label {
+            font-size: 1rem;
+            color: var(--gray);
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 20px;
+        }
+        th, td {
+            padding: 16px;
+            text-align: left;
+            border-bottom: 1px solid var(--glass-border);
+        }
+        th {
+            font-weight: 600;
+            color: var(--gray);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        td {
+            color: var(--dark);
+        }
+        .loading {
+            text-align: center;
+            padding: 40px;
+            color: var(--gray);
+            font-size: 1.2rem;
+        }
+        .error {
+            background: rgba(239, 68, 68, 0.1);
+            border: 1px solid rgba(239, 68, 68, 0.3);
+            color: #ef4444;
+            padding: 16px;
+            border-radius: 12px;
+            margin-bottom: 20px;
+            display: none;
+        }
+        .success {
+            background: rgba(34, 197, 94, 0.1);
+            border: 1px solid rgba(34, 197, 94, 0.3);
+            color: #22c55e;
+            padding: 16px;
+            border-radius: 12px;
+            margin-bottom: 20px;
+            display: none;
+        }
+        .hidden {
+            display: none;
+        }
+        .timestamp {
+            font-size: 0.9rem;
+            color: var(--gray);
+            text-align: center;
+            margin-top: 20px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>Admin Dashboard</h1>
+            <p class="subtitle">Monitor revenue, subscriptions, and usage</p>
+        </header>
+
+        <div class="card">
+            <h2>Authentication</h2>
+            <div class="token-section">
+                <input type="password" id="adminToken" placeholder="Enter Admin Token (X-Admin-Token)" />
+                <button id="saveToken">Save Token</button>
+            </div>
+            <div class="error" id="tokenError"></div>
+            <div class="success" id="tokenSuccess">Token saved. Click "Load Revenue Data" to fetch latest metrics.</div>
+        </div>
+
+        <div class="card hidden" id="dataSection">
+            <h2>Revenue Overview</h2>
+            <button id="refreshData">Load Revenue Data</button>
+            <div class="error" id="dataError"></div>
+            <div class="loading hidden" id="loading">Fetching data...</div>
+
+            <div id="stripeData" class="hidden">
+                <h3>Stripe MRR</h3>
+                <div class="stats-grid">
+                    <div class="stat-card">
+                        <div class="value" id="stripeMonthlyRevenue">$0</div>
+                        <div class="label">Monthly Revenue</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="value" id="stripeAnnualRevenue">$0</div>
+                        <div class="label">Annual Revenue</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="value" id="stripeTotalCustomers">0</div>
+                        <div class="label">Total Customers</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="value" id="stripeMode">test</div>
+                        <div class="label">Mode</div>
+                    </div>
+                </div>
+
+                <h3>Customers by Tier</h3>
+                <table>
+                    <thead>
+                        <tr><th>Tier</th><th>Customers</th></tr>
+                    </thead>
+                    <tbody id="stripeTierTable">
+                    </tbody>
+                </table>
+
+                <h3>Usage-based Revenue (In‑memory)</h3>
+                <div class="stats-grid">
+                    <div class="stat-card">
+                        <div class="value" id="usageMonthlyRevenue">$0</div>
+                        <div class="label">Monthly Revenue</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="value" id="usageTotalCustomers">0</div>
+                        <div class="label">Tracked Customers</div>
+                    </div>
+                </div>
+
+                <h3>Usage Customers by Tier</h3>
+                <table>
+                    <thead>
+                        <tr><th>Tier</th><th>Customers</th></tr>
+                    </thead>
+                    <tbody id="usageTierTable">
+                    </tbody>
+                </table>
+
+                <div class="timestamp">Data fetched at <span id="timestamp">-</span></div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const ADMIN_TOKEN_KEY = 'pdfapi_admin_token';
+        const adminTokenInput = document.getElementById('adminToken');
+        const saveTokenBtn = document.getElementById('saveToken');
+        const tokenError = document.getElementById('tokenError');
+        const tokenSuccess = document.getElementById('tokenSuccess');
+        const dataSection = document.getElementById('dataSection');
+        const refreshDataBtn = document.getElementById('refreshData');
+        const dataError = document.getElementById('dataError');
+        const loading = document.getElementById('loading');
+        const stripeDataDiv = document.getElementById('stripeData');
+
+        // Load saved token
+        const savedToken = localStorage.getItem(ADMIN_TOKEN_KEY);
+        if (savedToken) {
+            adminTokenInput.value = savedToken;
+            tokenSuccess.style.display = 'block';
+            dataSection.classList.remove('hidden');
+        }
+
+        saveTokenBtn.addEventListener('click', () => {
+            const token = adminTokenInput.value.trim();
+            if (!token) {
+                tokenError.textContent = 'Please enter an admin token.';
+                tokenError.style.display = 'block';
+                return;
+            }
+            localStorage.setItem(ADMIN_TOKEN_KEY, token);
+            tokenError.style.display = 'none';
+            tokenSuccess.style.display = 'block';
+            dataSection.classList.remove('hidden');
+        });
+
+        refreshDataBtn.addEventListener('click', loadRevenueData);
+
+        async function loadRevenueData() {
+            const token = localStorage.getItem(ADMIN_TOKEN_KEY);
+            if (!token) {
+                dataError.textContent = 'No admin token saved. Please enter token first.';
+                dataError.style.display = 'block';
+                return;
+            }
+
+            loading.classList.remove('hidden');
+            stripeDataDiv.classList.add('hidden');
+            dataError.style.display = 'none';
+
+            try {
+                const response = await fetch('/admin/revenue', {
+                    headers: { 'X-Admin-Token': token }
+                });
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                }
+                const data = await response.json();
+
+                // Update Stripe MRR
+                document.getElementById('stripeMonthlyRevenue').textContent = '$' + data.stripe.monthlyRevenue.toFixed(2);
+                document.getElementById('stripeAnnualRevenue').textContent = '$' + data.stripe.annualRevenue.toFixed(2);
+                document.getElementById('stripeTotalCustomers').textContent = data.stripe.totalCustomers;
+                document.getElementById('stripeMode').textContent = data.stripe.mode;
+
+                // Update Stripe tier table
+                const stripeTierTable = document.getElementById('stripeTierTable');
+                stripeTierTable.innerHTML = '';
+                for (const [tier, count] of Object.entries(data.stripe.customerCountByTier)) {
+                    const row = document.createElement('tr');
+                    row.innerHTML = `<td>${tier}</td><td>${count}</td>`;
+                    stripeTierTable.appendChild(row);
+                }
+
+                // Update usage‑based revenue
+                document.getElementById('usageMonthlyRevenue').textContent = '$' + data.usage.monthlyRevenue.toFixed(2);
+                document.getElementById('usageTotalCustomers').textContent = data.usage.totalCustomers;
+
+                // Update usage tier table
+                const usageTierTable = document.getElementById('usageTierTable');
+                usageTierTable.innerHTML = '';
+                for (const [tier, count] of Object.entries(data.usage.customerCountByTier)) {
+                    const row = document.createElement('tr');
+                    row.innerHTML = `<td>${tier}</td><td>${count}</td>`;
+                    usageTierTable.appendChild(row);
+                }
+
+                document.getElementById('timestamp').textContent = new Date(data.timestamp).toLocaleString();
+                stripeDataDiv.classList.remove('hidden');
+            } catch (err) {
+                dataError.textContent = 'Failed to load revenue data: ' + err.message;
+                dataError.style.display = 'block';
+            } finally {
+                loading.classList.add('hidden');
+            }
+        }
+
+        // Auto-load if token already saved
+        if (savedToken) {
+            loadRevenueData();
+        }
+    </script>
+</body>
+</html>

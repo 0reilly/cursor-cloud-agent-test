@@ -1,0 +1,71 @@
+// Simple usage tracking (in-memory)
+// In production, use a database like Redis or PostgreSQL
+
+class UsageTracker {
+  constructor() {
+    this.usage = new Map(); // customerId -> { count: number, lastReset: Date }
+    this.monthlyReset();
+  }
+
+  // Record usage for a customer
+  recordUsage(customerId, tier) {
+    if (!this.usage.has(customerId)) {
+      this.usage.set(customerId, { count: 0, tier, lastReset: new Date(), alertSentAtPercent: null });
+    }
+    
+    const record = this.usage.get(customerId);
+    record.count += 1;
+    
+    // Log usage (in production, would write to database)
+    console.log(`Usage recorded: customer ${customerId} (${tier}), count: ${record.count}`);
+    
+    // Check if over limit (for logging only)
+    const limit = this.getMonthlyLimit(tier);
+    if (limit && record.count > limit) {
+      console.warn(`Customer ${customerId} (${tier}) exceeded monthly limit of ${limit}`);
+    }
+    
+    return record.count;
+  }
+
+  // Get monthly limit based on tier
+  getMonthlyLimit(tier) {
+    const limits = {
+      free: 100,
+      pro: 10000,
+      enterprise: null, // unlimited
+    };
+    return limits[tier] || null;
+  }
+
+  // Check if customer has reached monthly limit
+  hasReachedLimit(customerId, tier) {
+    const record = this.usage.get(customerId);
+    if (!record) return false;
+    
+    const limit = this.getMonthlyLimit(tier);
+    if (limit === null) return false; // unlimited
+    
+    return record.count >= limit;
+  }
+
+  // Get usage for customer
+  getUsage(customerId) {
+    return this.usage.get(customerId) || { count: 0, tier: 'free', lastReset: new Date(), alertSentAtPercent: null };
+  }
+
+  // Reset monthly usage (call this on a schedule)
+  monthlyReset() {
+    console.log('Monthly usage reset');
+    // In production, would reset counters based on billing cycle
+    // For now, we just log
+  }
+
+  // Get all usage (for admin)
+  getAllUsage() {
+    return Array.from(this.usage.entries());
+  }
+}
+
+// Export singleton instance
+module.exports = new UsageTracker();
