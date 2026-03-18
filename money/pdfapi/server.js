@@ -4,6 +4,10 @@ const cors = require('cors');
 const multer = require('multer');
 const Stripe = require('stripe');
 const path = require('path');
+const helmet = require('helmet');
+const compression = require('compression');
+const morgan = require('morgan');
+const { v4: uuidv4 } = require('uuid');
 const { processPdf, extractTextFromPdf } = require('./pdfProcessor');
 const emailService = require('./emailService');
 const cache = require('./cache');
@@ -44,6 +48,55 @@ const TIER_PRICES = {
   enterprise: 299,
 };
 
+// Error response helper for consistent error formatting
+function errorResponse(res, statusCode, error, message, details = null) {
+  const response = {
+    error,
+    message,
+    timestamp: new Date().toISOString(),
+    requestId: res.get('X-Request-ID') || null,
+  };
+  if (details && process.env.NODE_ENV !== 'production') {
+    response.details = details;
+  }
+  return res.status(statusCode).json(response);
+}
+
+// Application metrics tracking
+const metrics = {
+  startTime: new Date(),
+  requests: {
+    total: 0,
+    byPath: {},
+    byMethod: {},
+    byStatus: {},
+  },
+  errors: 0,
+};
+
+// Metrics middleware
+app.use((req, res, next) => {
+  // Count request
+  metrics.requests.total++;
+  const path = req.path;
+  const method = req.method;
+  
+  metrics.requests.byPath[path] = (metrics.requests.byPath[path] || 0) + 1;
+  metrics.requests.byMethod[method] = (metrics.requests.byMethod[method] || 0) + 1;
+  
+  // Override res.end to capture status code
+  const originalEnd = res.end;
+  res.end = function(...args) {
+    metrics.requests.byStatus[res.statusCode] = (metrics.requests.byStatus[res.statusCode] || 0) + 1;
+    if (res.statusCode >= 400) {
+      metrics.errors++;
+    }
+    return originalEnd.apply(this, args);
+  };
+  
+  next();
+});
+
 // Stripe mode detection
 function getStripeMode() {
   const secretKey = process.env.STRIPE_SECRET_KEY || '';
@@ -55,15 +108,40 @@ function getStripeMode() {
 const STRIPE_MODE = getStripeMode();
 
 // Middleware
-app.use(cors());
-// Basic security headers
+// Request ID for tracking
 app.use((req, res, next) => {
-  res.setHeader('X-Content-Type-Options', 'nosniff');
-  res.setHeader('X-Frame-Options', 'DENY');
-  res.setHeader('X-XSS-Protection', '1; mode=block');
-  res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+  req.id = uuidv4();
+  res.setHeader('X-Request-ID', req.id);
   next();
 });
+
+// HTTP request logging (dev format in development, combined in production)
+app.use(morgan(process.env.NODE_ENV === 'production' ? 'combined' : 'dev', {
+  skip: (req, res) => req.path === '/health' // Skip logging health checks
+}));
+
+// Security headers
+app.use(helmet({
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc: ["'self'"],
+      styleSrc: ["'self'", "'unsafe-inline'", "https://cdn.jsdelivr.net", "https://js.stripe.com"],
+      scriptSrc: ["'self'", "'unsafe-inline'", "https://cdn.jsdelivr.net", "https://js.stripe.com"],
+      frameSrc: ["'self'", "https://js.stripe.com", "https://hooks.stripe.com"],
+      connectSrc: ["'self'", "https://api.stripe.com", "https://hooks.stripe.com"],
+      imgSrc: ["'self'", "data:", "https://*.stripe.com", "https://*.stripe.network"],
+    },
+  },
+  crossOriginEmbedderPolicy: false, // Allow Stripe.js to embed
+}));
+
+// CORS
+app.use(cors());
+
+// Response compression
+app.use(compression());
+
+// Body parsing
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 // app.use(express.static(path.join(__dirname, 'public'))); // moved after routes
@@ -242,13 +320,13 @@ async function checkAndSendUsageAlert(customerId, tier, customerEmail) {
 async function authenticate(req, res, next) {
   const apiKey = req.headers['x-api-key'];
   if (!apiKey) {
-    return res.status(401).json({ error: 'API key required' });
+    return errorResponse(res, 401, 'Unauthorized', 'API key required');
   }
   try {
     // Retrieve customer from Stripe
     const customer = await stripe.customers.retrieve(apiKey);
     if (customer.deleted) {
-      return res.status(401).json({ error: 'Invalid API key' });
+      return errorResponse(res, 401, 'Unauthorized', 'Invalid API key');
     }
     req.customer = customer;
     req.customerId = customer.id;
@@ -257,7 +335,7 @@ async function authenticate(req, res, next) {
     next();
   } catch (err) {
     console.error('Auth error:', err);
-    return res.status(401).json({ error: 'Invalid API key' });
+    return errorResponse(res, 401, 'Unauthorized', 'Invalid API key');
   }
 }
 
@@ -284,10 +362,8 @@ function rateLimit(req, res, next) {
   }
   
   if (customerData.count >= RATE_LIMIT_MAX_REQUESTS) {
-    return res.status(429).json({ 
-      error: 'Rate limit exceeded', 
-      message: `Too many requests. Please wait ${Math.ceil((customerData.expiresAt - now) / 1000)} seconds.`
-    });
+    return errorResponse(res, 429, 'Rate limit exceeded', 
+      `Too many requests. Please wait ${Math.ceil((customerData.expiresAt - now) / 1000)} seconds.`);
   }
   
   customerData.count++;
@@ -299,7 +375,7 @@ function rateLimit(req, res, next) {
 function requireAdmin(req, res, next) {
   const adminToken = req.headers['x-admin-token'];
   if (!adminToken || adminToken !== process.env.ADMIN_TOKEN) {
-    return res.status(401).json({ error: 'Admin token required' });
+    return errorResponse(res, 401, 'Unauthorized', 'Admin token required');
   }
   next();
 }
@@ -311,6 +387,37 @@ app.get('/', (req, res) => {
 
 app.get('/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
+});
+
+app.get('/metrics', (req, res) => {
+  const uptime = process.uptime();
+  const memoryUsage = process.memoryUsage();
+  
+  res.json({
+    status: 'ok',
+    timestamp: new Date().toISOString(),
+    uptime: {
+      seconds: uptime,
+      human: `${Math.floor(uptime / 3600)}h ${Math.floor((uptime % 3600) / 60)}m ${Math.floor(uptime % 60)}s`
+    },
+    memory: {
+      rss: `${Math.round(memoryUsage.rss / 1024 / 1024)}MB`,
+      heapTotal: `${Math.round(memoryUsage.heapTotal / 1024 / 1024)}MB`,
+      heapUsed: `${Math.round(memoryUsage.heapUsed / 1024 / 1024)}MB`,
+      external: `${Math.round(memoryUsage.external / 1024 / 1024)}MB`,
+    },
+    node: process.version,
+    env: process.env.NODE_ENV,
+    stripeMode: STRIPE_MODE,
+    metrics: {
+      requests: metrics.requests.total,
+      errors: metrics.errors,
+      byPath: metrics.requests.byPath,
+      byMethod: metrics.requests.byMethod,
+      byStatus: metrics.requests.byStatus,
+    },
+    startTime: metrics.startTime.toISOString(),
+  });
 });
 app.get('/docs', (req, res) => res.sendFile(path.join(__dirname, 'public', 'docs.html')));
 
@@ -333,14 +440,14 @@ app.post('/create-checkout-session', async (req, res) => {
     res.json({ sessionId: session.id, url: session.url });
   } catch (err) {
     console.error('Checkout session error:', err);
-    res.status(500).json({ error: err.message });
+    errorResponse(res, 500, 'Internal Server Error', err.message);
   }
 });
 
 // PDF processing endpoint (authenticated)
 app.post('/process-pdf', authenticate, rateLimit, upload.single('file'), async (req, res) => {
   if (!req.file) {
-    return res.status(400).json({ error: 'No PDF file uploaded' });
+    return errorResponse(res, 400, 'Bad Request', 'No PDF file uploaded');
   }
   
   const tier = req.tier;
@@ -385,7 +492,7 @@ app.post('/process-pdf', authenticate, rateLimit, upload.single('file'), async (
     res.send(processedPdf);
   } catch (error) {
     console.error('PDF processing error:', error);
-    res.status(500).json({ error: 'Failed to process PDF', details: error.message });
+    errorResponse(res, 500, 'Internal Server Error', 'Failed to process PDF', error.message);
   }
 });
 
@@ -436,7 +543,7 @@ app.post('/extract-text', authenticate, rateLimit, upload.single('file'), async 
     });
   } catch (error) {
     console.error('Text extraction error:', error);
-    res.status(500).json({ error: 'Failed to extract text from PDF', details: error.message });
+    errorResponse(res, 500, 'Internal Server Error', 'Failed to extract text from PDF', error.message);
   }
 });
 
@@ -467,7 +574,7 @@ app.post('/webhook', express.raw({ type: 'application/json' }), async (req, res)
     event = stripe.webhooks.constructEvent(req.body, sig, process.env.STRIPE_WEBHOOK_SECRET);
   } catch (err) {
     console.error('Webhook signature verification failed:', err.message);
-    return res.status(400).send(`Webhook Error: ${err.message}`);
+    return errorResponse(res, 400, 'Webhook Error', err.message);
   }
 
   // Handle events
@@ -586,17 +693,16 @@ app.use((err, req, res, next) => {
   
   // Multer errors
   if (err.code === 'LIMIT_FILE_SIZE') {
-    return res.status(400).json({ error: 'File too large', message: 'Maximum file size is 50MB' });
+    return errorResponse(res, 400, 'Bad Request', 'Maximum file size is 50MB');
   }
   if (err.message && err.message.includes('Only PDF files are allowed')) {
-    return res.status(400).json({ error: 'Invalid file type', message: 'Only PDF files are allowed' });
+    return errorResponse(res, 400, 'Bad Request', 'Only PDF files are allowed');
   }
   
   // Default error
-  res.status(500).json({ 
-    error: 'Internal server error', 
-    message: process.env.NODE_ENV === 'development' ? err.message : 'Something went wrong' 
-  });
+  const message = process.env.NODE_ENV === 'development' ? err.message : 'Something went wrong';
+  return errorResponse(res, 500, 'Internal Server Error', message, 
+    process.env.NODE_ENV === 'development' ? err.stack : null);
 });
 
 app.use(express.static(path.join(__dirname, 'public')));
