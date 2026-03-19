@@ -177,9 +177,36 @@ Currently running in **Stripe test mode**. To accept real payments:
 5. **Integrations**: Zapier, n8n, Make.com
 6. **SDKs**: Python, JavaScript, Go, Ruby
 
+## Local Development
+
+If the Fly.io deployment is paused (trial ended), you can run the API locally:
+
+```bash
+# Clone and install
+cd pdfapi
+npm install
+
+# Set up environment variables
+cp .env.example .env
+# Edit .env with your Stripe test keys
+
+# Run the server
+npm start
+
+# Test endpoints
+curl http://localhost:3000/health
+curl -H "X-API-Key: cus_UAkJk5gEURveu6" http://localhost:3000/customer/usage
+
+# Run comprehensive test
+./test-migration.sh
+```
+
+**Note**: The API will work identically locally with test Stripe keys.
+
 ## Support
 
-- **Documentation**: https://pdf-processor-api.fly.dev
+- **Documentation**: https://pdf-processor-api.fly.dev (when deployed)
+- **Local docs**: See `docs/` directory for API documentation
 - **Issues**: GitHub Issues
 - **Email**: support@pdfprocessor.com (configure forwarding)
 

@@ -1,17 +1,20 @@
 # Deployment Guide
 
+**Note**: The current Fly.io deployment uses a free trial that pauses after 5 minutes without a credit card. To keep it running permanently, add a credit card at https://fly.io/trial or choose another deployment option below.
+
 ## Option 1: Fly.io (Recommended)
 
 1. Install flyctl: `curl -L https://fly.io/install.sh | sh`
 2. Login: `flyctl auth login`
 3. Create app: `flyctl launch` (use existing fly.toml)
-4. Set secrets:
+4. **Add a credit card** to prevent trial timeout: https://fly.io/trial
+5. Set secrets:
    ```bash
    flyctl secrets set STRIPE_SECRET_KEY=sk_live_...
    flyctl secrets set STRIPE_PUBLISHABLE_KEY=pk_live_...
    flyctl secrets set STRIPE_WEBHOOK_SECRET=whsec_...
    ```
-5. Deploy: `flyctl deploy`
+6. Deploy: `flyctl deploy`
 
 ## Option 2: Render.com
 

@@ -12,6 +12,8 @@
 
 ⚠️ **Stripe is currently in TEST MODE** (using test keys)
 
+**Deployment Status Note**: The Fly.io trial pauses after 5 minutes without a credit card. Before switching to live mode, ensure your deployment is running permanently by adding a credit card at https://fly.io/trial or migrating to another platform.
+
 ## What You Need to Provide
 To switch to live mode, you must provide the following **live Stripe credentials**:
 

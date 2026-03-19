@@ -1,6 +1,22 @@
-[dotenv@17.3.1] injecting env (6) from .env -- tip: 🔐 encrypt with Dotenvx: https://dotenvx.com
-Monthly usage reset
+
+> pdfapi@1.0.0 start
+> node server.js
+
+[dotenv@17.3.1] injecting env (11) from .env -- tip: ⚙️  specify custom .env file path with { path: '/custom/path/.env' }
+SendGrid API key not configured. Emails will be logged only.
+UsageTracker initialized with SQLite database
 PDF Processor API running on port 3000
 Environment: development
 Stripe account: [object Object]
-Usage recorded: customer cus_UAkJk5gEURveu6 (free), count: 1
+[0mGET /metrics [32m200[0m 0.474 ms - 395[0m
+[0mGET /customer/usage [32m200[0m 544.865 ms - 174[0m
+[0mGET / [32m200[0m 3.277 ms - 16754[0m
+[0mPOST /process-pdf [33m400[0m 186.392 ms - 146[0m
+[0mGET /admin/revenue [33m401[0m 0.533 ms - 147[0m
+[0mGET /metrics [32m200[0m 0.442 ms - 486[0m
+[0mGET /customer/usage [32m200[0m 223.764 ms - 174[0m
+[0mGET / [32m200[0m 1.108 ms - 16754[0m
+[0mPOST /process-pdf [33m400[0m 202.738 ms - 146[0m
+[0mGET /admin/revenue [32m200[0m 149.400 ms - 338[0m
+[0mGET /admin/revenue [32m200[0m 143.298 ms - 338[0m
+[0mGET /admin/revenue [32m200[0m 164.861 ms - 338[0m

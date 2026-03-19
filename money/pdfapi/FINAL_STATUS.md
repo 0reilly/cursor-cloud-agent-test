@@ -6,19 +6,29 @@ All success criteria met except live Stripe migration (requires your credentials
 
 ## 🚀 LIVE DEPLOYMENT
 - **URL**: https://pdf-processor-api.fly.dev
-- **Status**: ✅ Operational (Stripe Test Mode)
-- **Health**: https://pdf-processor-api.fly.dev/health
+- **Status**: ⚠️ Fly.io Trial Ended (requires credit card to restart)
+- **Code Status**: ✅ Fully functional and ready for production
+- **Health**: https://pdf-processor-api.fly.dev/health (inaccessible while trial paused)
 - **Admin**: https://pdf-processor-api.fly.dev/admin/revenue (use X-Admin-Token header)
+
+⚠ **Fly.io Trial Limitation**: The deployment uses Fly.io's free trial which stops after 5 minutes without a credit card. To keep the app running:
+   - Add a credit card at https://fly.io/trial
+   - Or deploy to another platform (Render, Railway, etc.) using the deployment guide
 
 ## 📊 CURRENT STATUS
 ```
-System: Fully operational in Stripe test mode
-API: Processing PDFs with watermarking and text extraction
+System: Code complete, deployment paused (Fly.io trial)
+API: Fully functional - PDF processing with watermarking/text extraction
 Database: SQLite persistence for usage tracking
 Security: Headers, rate limiting, file validation implemented
 Monitoring: /health endpoint, security headers verified
 Customers: 1 test customer active (free tier, 8 PDFs processed)
+Deployment: Ready for production with live Stripe keys
 ```
+
+⚠ **Deployment Note**: The Fly.io trial pauses after 5 minutes without a credit card. The API code is fully functional and passes all tests. To deploy permanently:
+1. Add credit card to Fly.io account OR
+2. Deploy to Render/Railway using deployment guide
 
 ## 🛠 WHAT WAS BUILT (14/15 todos complete)
 
