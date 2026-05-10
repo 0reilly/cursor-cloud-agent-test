@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-GLM-4.7-Flash-4bit Local Server with Streaming
+Qwen3.5-9B-MLX Local Server with Streaming
 
-A FastAPI server that provides streaming inference for the GLM-4.7-Flash-4bit model.
+A FastAPI server that provides streaming inference for the Qwen3.5-9B-MLX model.
 Supports both streaming and non-streaming responses.
 
 Usage:
@@ -27,14 +27,15 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 # Configuration
-MODEL_PATH = "./GLM-4.7-Flash-4bit"
+MODEL_PATH = "/Users/adamoreilly/model/models/qwen3.5-9b-mlx"
 HOST = "0.0.0.0"
 PORT = int(os.environ.get('PORT', 8000))
-MAX_CACHEABLE_TOKENS = 512  # Limit cache to 512 tokens for memory safety
-PREFILL_STEP_SIZE = 1024  # Reduced for memory safety
-KV_BITS = 8  # 8-bit quantization for KV cache (balanced speed/memory)
-MAX_KV_SIZE = 2048  # Limit total KV cache size (prefix + generation)
+MAX_CACHEABLE_TOKENS = 400  # Limit cache to 400 tokens (fits condensed prompt)
+PREFILL_STEP_SIZE = 8192  # Default mlx_lm value (faster prefill)
+KV_BITS = None  # Disable quantization (RotatingKVCache Quantization NYI)
+MAX_KV_SIZE = 512  # Limit total KV cache to 512 tokens (prevent OOM)
 ENABLE_PREFILL = True  # Can be disabled if memory issues persist
+MAX_CACHES = 3  # Maximum number of system prompt caches to keep (prevent OOM)
 
 # Global model and tokenizer
 model = None
@@ -44,8 +45,94 @@ tokenizer = None
 system_prompt_caches = {}  # hash -> (cache, prefix_len)
 cache_lock = threading.Lock()
 
+import re
+_THINK_PATTERN = re.compile(r'<think>.*?</think>\s*', re.DOTALL)
+_THINK_OPEN_PATTERN = re.compile(r'<think>.*$', re.DOTALL)
+
+def strip_thinking(text: str) -> str:
+    """Remove <think>...</think> blocks from Qwen responses.
+    
+    Qwen3.5 models may output reasoning in <think> tags. This function
+    strips those blocks, returning only the final assistant response.
+    Handles complete blocks, unclosed blocks, and nested blocks.
+    
+    Strategy:
+    - Complete <think>...</think> blocks: removed entirely
+    - Unclosed <think> (no matching </think>): strip the opening tag, keep content
+      (happens when token budget is too small for thinking + response)
+    """
+    # First remove all complete <think>...</think> blocks (non-greedy, including trailing whitespace)
+    text = _THINK_PATTERN.sub('', text)
+    # For any remaining unclosed <think> tags, just remove the <think> opening tag
+    text = text.replace('<think>', '')
+    return text.strip()
+
+class ThinkingFilter:
+    """Stateful filter to suppress <think> blocks during token streaming.
+    
+    Since <think>...</think> spans multiple tokens, we need to track whether
+    we're currently inside a thinking block to suppress the enclosed tokens.
+    If the think block is never closed (token budget exhausted), flush() will
+    strip the opening <think> tag and release any remaining buffered content.
+    """
+    def __init__(self):
+        self.buffer = ""
+        self.in_think = False
+        self.think_depth = 0
+    
+    def feed(self, token_text: str) -> str:
+        """Feed a new token, return any non-thinking text to emit."""
+        self.buffer += token_text
+        output = ""
+        i = 0
+        while i < len(self.buffer):
+            if not self.in_think:
+                # Look for <think> opening tag
+                tag_start = self.buffer.find('<think>', i)
+                if tag_start == -1:
+                    # No more think tags — emit everything safe
+                    output += self.buffer[i:]
+                    self.buffer = ""
+                    break
+                else:
+                    # Emit text before the tag
+                    output += self.buffer[i:tag_start]
+                    self.in_think = True
+                    self.think_depth = 1
+                    i = tag_start + len('<think>')
+            else:
+                # We're inside a think block — look for </think> or nested <think>
+                close_tag = self.buffer.find('</think>', i)
+                open_tag = self.buffer.find('<think>', i)
+                if close_tag == -1 and open_tag == -1:
+                    # No tags at all — buffer the rest, emit nothing
+                    self.buffer = self.buffer[i:] if i > 0 else self.buffer
+                    break
+                # Pick the nearest tag
+                if open_tag != -1 and (close_tag == -1 or open_tag < close_tag):
+                    # Nested <think>
+                    self.think_depth += 1
+                    i = open_tag + len('<think>')
+                elif close_tag != -1:
+                    self.think_depth -= 1
+                    i = close_tag + len('</think>')
+                    if self.think_depth == 0:
+                        self.in_think = False
+        return output
+    
+    def flush(self) -> str:
+        """Flush any remaining buffer, stripping unclosed <think> tags."""
+        if self.in_think:
+            # Unclosed think block — just strip the <think> tag, keep content
+            self.buffer = self.buffer.replace('<think>', '')
+            self.in_think = False
+            self.think_depth = 0
+        result = self.buffer
+        self.buffer = ""
+        return result
+
 def get_prefix_tokens(system_prompt):
-    """Return token IDs for prefix up to and including <|user|> token."""
+    """Return token IDs for prefix up to and including <|im_start|>assistant\n marker."""
     messages = [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": ""}
@@ -53,18 +140,18 @@ def get_prefix_tokens(system_prompt):
     template = tokenizer.apply_chat_template(
         messages,
         tokenize=False,
-        add_generation_prompt=True,
-        enable_thinking=False
+        add_generation_prompt=True
     )
     tokens = tokenizer.encode(template)
-    # Find <|user|> token id (154827)
-    user_token_id = 154827
+    print(f"[DEBUG] Total tokens in template: {len(tokens)}")
+    # Qwen: find <|im_start|>assistant\n marker for prefix split
+    assistant_marker = tokenizer.encode("<|im_start|>assistant\n")
     try:
-        idx = tokens.index(user_token_id)
-        return tokens[:idx+1]
-    except ValueError:
-        # fallback: return tokens up to the assistant token?
-        # This should not happen
+        for i in range(len(tokens) - len(assistant_marker) + 1):
+            if tokens[i:i+len(assistant_marker)] == assistant_marker:
+                return tokens[:i+len(assistant_marker)]
+        return tokens
+    except Exception:
         return tokens
 
 def get_system_prompt_cache(system_prompt):
@@ -118,13 +205,20 @@ def get_system_prompt_cache(system_prompt):
             print(f"Warning: Failed to prefill cache: {e}")
             # Continue with empty cache - it will be filled during generation
     
+    # Enforce cache limit
+    if len(system_prompt_caches) >= MAX_CACHES:
+        # Remove the oldest cache (first key)
+        oldest_key = next(iter(system_prompt_caches))
+        del system_prompt_caches[oldest_key]
+        print(f"Evicted oldest cache (hash: {oldest_key[:16]}...) to maintain limit of {MAX_CACHES}")
+    
     # Store cache (now prefilled)
     system_prompt_caches[hash_key] = (prompt_cache, prefix_len)
     print(f"Cache stored: hash={hash_key[:16]}..., prefix_len={prefix_len}, cache_dict_size={len(system_prompt_caches)}")
     return prompt_cache, prefix_len
 
-def format_glm4_prompt(user_message: str, system_message: Optional[str] = None) -> str:
-    """Format prompt for GLM-4 model using tokenizer's chat template."""
+def format_qwen_prompt(user_message: str, system_message: Optional[str] = None) -> str:
+    """Format prompt for Qwen3.5 model using the Qwen chat template."""
     if tokenizer is None:
         raise ValueError("Tokenizer not loaded")
     
@@ -136,20 +230,18 @@ def format_glm4_prompt(user_message: str, system_message: Optional[str] = None) 
     return tokenizer.apply_chat_template(
         messages,
         tokenize=False,
-        add_generation_prompt=True,
-        enable_thinking=False  # We want final answer, not thinking
+        add_generation_prompt=True
     )
 
-def format_messages(messages: List[Dict[str, str]], enable_thinking: bool = False) -> str:
-    """Format messages using tokenizer's chat template."""
+def format_messages(messages: List[Dict[str, str]]) -> str:
+    """Format messages using the Qwen chat template."""
     if tokenizer is None:
         raise ValueError("Tokenizer not loaded")
     
     return tokenizer.apply_chat_template(
         messages,
         tokenize=False,
-        add_generation_prompt=True,
-        enable_thinking=enable_thinking
+        add_generation_prompt=True
     )
 
 def can_use_system_cache(messages: List[Dict[str, str]]) -> Optional[str]:
@@ -171,6 +263,8 @@ def can_use_system_cache(messages: List[Dict[str, str]]) -> Optional[str]:
         return None
     
     system_prompt = messages[0]["content"]
+    import hashlib
+    print(f"[DEBUG] System prompt length: {len(system_prompt)} chars, hash: {hashlib.sha256(system_prompt.encode()).hexdigest()[:16]}")
     
     # Check for other system messages
     for msg in messages[1:]:
@@ -195,13 +289,22 @@ async def lifespan(app: FastAPI):
     global model, tokenizer
     
     # Load model on startup
-    print("Loading GLM-4.7-Flash-4bit model...")
+    print("Loading Qwen3.5-9B-MLX model...")
     start_time = time.time()
     
     try:
         model, tokenizer = mlx_lm.load(MODEL_PATH, lazy=True)
         load_time = time.time() - start_time
         print(f"✓ Model loaded successfully in {load_time:.2f} seconds")
+        
+        # Set metal wired memory limit to 2GB — reduces OS paging latency
+        # Benchmark-verified: consistent 1.003-1.010x speedup across prompt lengths
+        # Only config that never regresses (wired_2gb wins on medium+long, competitive on short)
+        try:
+            mx.set_wired_limit(2 * 1024**3)
+            print("✓ Metal wired memory limit set to 2GB (benchmark-verified optimization)")
+        except Exception as e:
+            print(f"⚠ Could not set wired memory limit: {e}")
         
         # Warm-up: Trigger JIT compilation to make first request faster
         print("Warming up model (triggering JIT compilation)...")
@@ -220,6 +323,75 @@ async def lifespan(app: FastAPI):
             warmup_time = time.time() - warmup_start
             print(f"✓ Warm-up completed in {warmup_time:.2f} seconds")
             print(f"  (First user request will be faster due to JIT compilation)")
+            
+            # Prefill system prompt cache for faster CLI requests
+            print("Prefilling system prompt cache for CLI agent...")
+            try:
+                # Load condensed system prompt from file
+                condensed_prompt_path = "cli_system_prompt_condensed_raw.txt"
+                import os
+                if os.path.exists(condensed_prompt_path):
+                    with open(condensed_prompt_path, "r", encoding="utf-8") as f:
+                        raw_prompt = f.read().strip()
+                    # Format with current date (same as client does)
+                    from datetime import datetime
+                    current_date = datetime.now().strftime("%Y-%m-%d")
+                    current_year = datetime.now().strftime("%Y")
+                    system_prompt = raw_prompt.format(current_date=current_date, current_year=current_year)
+                    import hashlib
+                    hash_key = hashlib.sha256(system_prompt.encode()).hexdigest()
+                    # Create and prefill cache (same logic as get_system_prompt_cache)
+                    from mlx_lm.models import cache
+                    import mlx.core as mx
+                    prompt_cache = cache.make_prompt_cache(model)
+                    # Get prefix tokens (system prompt up to generation prompt marker)
+                    messages = [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": ""}
+                    ]
+                    template = tokenizer.apply_chat_template(
+                        messages,
+                        tokenize=False,
+                        add_generation_prompt=True
+                    )
+                    tokens = tokenizer.encode(template)
+                    # Qwen template: ...<|im_start|>assistant\n is the generation prompt
+                    # Find <|im_start|>assistant marker to split prefix
+                    assistant_marker = tokenizer.encode("<|im_start|>assistant\n")
+                    try:
+                        # Find the subsequence in tokens
+                        for i in range(len(tokens) - len(assistant_marker) + 1):
+                            if tokens[i:i+len(assistant_marker)] == assistant_marker:
+                                idx = i + len(assistant_marker) - 1
+                                prefix_tokens = tokens[:idx+1]
+                                break
+                        else:
+                            prefix_tokens = tokens
+                    except Exception:
+                        prefix_tokens = tokens
+                    prefix_len = len(prefix_tokens)
+                    print(f"Prefix length: {prefix_len} tokens")
+                    # Prefill cache with prefix tokens
+                    with mx.stream(mx.default_stream(mx.default_device())):
+                        mx_tokens = mx.array([prefix_tokens])
+                        _ = model(mx_tokens, cache=prompt_cache)
+                    print(f"Cache prefilled with {prefix_len} tokens")
+                    # Store in global cache dict
+                    import threading
+                    with cache_lock:
+                        system_prompt_caches[hash_key] = (prompt_cache, prefix_len)
+                    print(f"System prompt cache ready (hash: {hash_key[:16]}...)")
+                    
+                    # Warm-up generation step to compile kernels for autoregressive generation
+                    # Skipped due to memory constraints - will be compiled on first request
+                    try:
+                        pass  # Generation warm-up skipped to conserve memory
+                    except Exception as e:
+                        print(f"⚠ Generation warm-up skipped: {e}")
+                else:
+                    print("⚠ Condensed prompt file not found, skipping cache prefill")
+            except Exception as e:
+                print(f"⚠ System prompt cache prefill failed (non-critical): {e}")
         except Exception as warmup_error:
             print(f"⚠ Warm-up failed (non-critical): {warmup_error}")
             print(f"  (First request may be slower)")
@@ -260,13 +432,13 @@ class GenerationResponse(BaseModel):
     """Response model for generation."""
     text: str = Field(..., description="Generated text")
     created_at: str = Field(..., description="ISO timestamp")
-    model: str = Field("GLM-4.7-Flash-4bit", description="Model name")
+    model: str = Field("Qwen3.5-9B-MLX", description="Model name")
     usage: Dict[str, int] = Field(..., description="Token usage statistics")
 
 # Create FastAPI app
 app = FastAPI(
-    title="GLM-4.7-Flash-4bit Server",
-    description="Local server for GLM-4.7-Flash-4bit model with streaming",
+    title="Qwen3.5-9B-MLX Server",
+    description="Local server for Qwen3.5-9B-MLX model with streaming",
     version="1.0.0",
     lifespan=lifespan
 )
@@ -284,7 +456,7 @@ app.add_middleware(
 async def root():
     """Root endpoint with server info."""
     return {
-        "message": "GLM-4.7-Flash-4bit Server",
+        "message": "Qwen3.5-9B-MLX Server",
         "status": "running",
         "endpoints": {
             "GET /": "This info page",
@@ -313,12 +485,12 @@ async def model_info():
         raise HTTPException(status_code=503, detail="Model not loaded")
     
     return {
-        "model": "GLM-4.7-Flash-4bit",
+        "model": "Qwen3.5-9B-MLX",
         "format": "MLX 4-bit quantized",
         "path": MODEL_PATH,
         "status": "loaded",
-        "parameters": "30B",
-        "context_window": "202K tokens",
+        "parameters": "9B",
+        "context_window": "128K tokens",
         "loaded_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     }
 
@@ -344,9 +516,9 @@ async def generate(request: GenerationRequest):
     
     # Format prompt
     if request.system_prompt:
-        formatted_prompt = format_glm4_prompt(request.prompt, request.system_prompt)
+        formatted_prompt = format_qwen_prompt(request.prompt, request.system_prompt)
     else:
-        formatted_prompt = format_glm4_prompt(request.prompt)
+        formatted_prompt = format_qwen_prompt(request.prompt)
     
     # Generate response
     start_time = time.time()
@@ -389,14 +561,14 @@ async def generate(request: GenerationRequest):
             cache.trim_prompt_cache(prompt_cache, added_tokens)
             print(f"Cache trimmed (generate), remaining cache size approx {prefix_len} tokens")
     
-    # Calculate token counts (approximate)
+    # Calculate token counts (mlx_lm.generate returns only generated tokens, not prompt)
     input_tokens = len(tokenizer.encode(formatted_prompt))
-    output_tokens = len(tokenizer.encode(response_text)) - input_tokens
+    output_tokens = len(tokenizer.encode(response_text))
     
     return GenerationResponse(
-        text=response_text.strip(),
+        text=strip_thinking(response_text.strip()),
         created_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-        model="GLM-4.7-Flash-4bit",
+        model="Qwen3.5-9B-MLX",
         usage={
             "prompt_tokens": input_tokens,
             "completion_tokens": output_tokens,
@@ -414,6 +586,7 @@ async def generate_stream_generator(prompt: str, max_tokens: int):
     start_time = time.time()
     accumulated_text = ""
     last_response = None
+    think_filter = ThinkingFilter()
     
     try:
         # Get streaming generator
@@ -430,13 +603,15 @@ async def generate_stream_generator(prompt: str, max_tokens: int):
         # Process streaming responses
         for response in stream:
             # response.text contains the new text for this token
-            new_text = response.text
-            accumulated_text += new_text
+            raw_text = response.text
+            # Filter out thinking blocks from the token stream
+            clean_text = think_filter.feed(raw_text)
+            accumulated_text += clean_text
             last_response = response
             
-            # Send SSE event with the new text
+            # Send SSE event with the filtered text
             data = {
-                "text": new_text,
+                "text": clean_text,
                 "accumulated": accumulated_text,
                 "finished": False,
                 "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
@@ -447,14 +622,17 @@ async def generate_stream_generator(prompt: str, max_tokens: int):
             if response.finish_reason is not None:
                 break
         
-        # Final completion event
+        # Final completion event — flush any remaining buffered text
+        flush_text = think_filter.flush()
+        if flush_text:
+            accumulated_text += flush_text
         total_time = time.time() - start_time
         finish_reason = "completed"
         if last_response and hasattr(last_response, 'finish_reason') and last_response.finish_reason:
             finish_reason = last_response.finish_reason
         
         final_data = {
-            "text": "",
+            "text": flush_text,
             "accumulated": accumulated_text,
             "finished": True,
             "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -472,7 +650,7 @@ async def generate_stream_generator(prompt: str, max_tokens: int):
         }
         yield f"data: {json.dumps(error_data)}\n\n"
 
-async def generate_openai_stream_generator(prompt: str, max_tokens: int, request_id: str = None, model_name: str = "GLM-4.7-Flash-4bit", prompt_cache=None, prefix_len=0):
+async def generate_openai_stream_generator(prompt: str, max_tokens: int, request_id: str = None, model_name: str = "Qwen3.5-9B-MLX", prompt_cache=None, prefix_len=0):
     """Generator function for OpenAI-compatible streaming responses."""
     if model is None or tokenizer is None:
         # Return OpenAI-style error
@@ -494,6 +672,7 @@ async def generate_openai_stream_generator(prompt: str, max_tokens: int, request
     start_time = time.time()
     accumulated_text = ""
     last_response = None
+    think_filter = ThinkingFilter()
     
     # Generate request ID if not provided
     if not request_id:
@@ -516,34 +695,40 @@ async def generate_openai_stream_generator(prompt: str, max_tokens: int, request
         # Process streaming responses
         first_token_time = None
         for response in stream:
-            new_text = response.text
+            raw_text = response.text
+            # Filter out thinking blocks from the token stream
+            clean_text = think_filter.feed(raw_text)
             if first_token_time is None:
                 first_token_time = time.time() - start_time
                 print(f"[DEBUG] First token after {first_token_time:.3f}s, prefix_len={prefix_len}, cache={'present' if prompt_cache else 'None'}")
-            accumulated_text += new_text
+            accumulated_text += clean_text
             last_response = response
             
-            # Create OpenAI-compatible chunk
-            chunk = {
-                "id": request_id,
-                "object": "chat.completion.chunk",
-                "created": int(time.time()),
-                "model": model_name,
-                "choices": [{
-                    "index": 0,
-                    "delta": {
-                        "content": new_text
-                    },
-                    "finish_reason": None
-                }]
-            }
-            yield f"data: {json.dumps(chunk)}\n\n"
+            # Create OpenAI-compatible chunk (skip empty deltas from filtered thinking)
+            if clean_text:
+                chunk = {
+                    "id": request_id,
+                    "object": "chat.completion.chunk",
+                    "created": int(time.time()),
+                    "model": model_name,
+                    "choices": [{
+                        "index": 0,
+                        "delta": {
+                            "content": clean_text
+                        },
+                        "finish_reason": None
+                    }]
+                }
+                yield f"data: {json.dumps(chunk)}\n\n"
             
             # Check if generation is complete
             if response.finish_reason is not None:
                 break
         
-        # Final completion chunk
+        # Final completion chunk — flush any remaining buffered text first
+        flush_text = think_filter.flush()
+        if flush_text:
+            accumulated_text += flush_text
         total_time = time.time() - start_time
         finish_reason = "stop"
         if last_response and hasattr(last_response, 'finish_reason') and last_response.finish_reason:
@@ -598,9 +783,9 @@ async def generate_stream(request: GenerationRequest):
     
     # Format prompt
     if request.system_prompt:
-        formatted_prompt = format_glm4_prompt(request.prompt, request.system_prompt)
+        formatted_prompt = format_qwen_prompt(request.prompt, request.system_prompt)
     else:
-        formatted_prompt = format_glm4_prompt(request.prompt)
+        formatted_prompt = format_qwen_prompt(request.prompt)
     
     return StreamingResponse(
         generate_stream_generator(formatted_prompt, request.max_tokens),
@@ -627,8 +812,8 @@ async def chat_completions(request: ChatRequest):
     if not user_messages:
         raise HTTPException(status_code=400, detail="No user messages found")
     
-    # Format prompt using tokenizer's chat template (no thinking)
-    formatted_prompt = format_messages(messages, enable_thinking=False)
+    # Format prompt using Qwen chat template
+    formatted_prompt = format_messages(messages)
     
     # Handle streaming vs non-streaming
     if request.stream:
@@ -653,7 +838,7 @@ async def chat_completions(request: ChatRequest):
                 formatted_prompt, 
                 request.max_tokens,
                 request_id=request_id,
-                model_name="GLM-4.7-Flash-4bit",
+                model_name="Qwen3.5-9B-MLX",
                 prompt_cache=prompt_cache,
                 prefix_len=prefix_len
             ),
@@ -695,7 +880,7 @@ async def chat_completions(request: ChatRequest):
         if response_text.startswith(formatted_prompt):
             response_text = response_text[len(formatted_prompt):]
         
-        response_text = response_text.strip()
+        response_text = strip_thinking(response_text.strip())
         
         # Trim cache back to prefix length if used
         if prompt_cache:
@@ -707,21 +892,21 @@ async def chat_completions(request: ChatRequest):
                 cache.trim_prompt_cache(prompt_cache, added_tokens)
                 print(f"Cache trimmed, remaining cache size approx {prefix_len} tokens")
         
-        # Calculate token counts
+        # Calculate token counts (mlx_lm.generate returns only generated tokens)
         input_tokens = len(tokenizer.encode(formatted_prompt))
-        output_tokens = len(tokenizer.encode(response_text)) - input_tokens
+        output_tokens = len(tokenizer.encode(response_text))
         
         # Return OpenAI-compatible response
         return {
             "id": f"chatcmpl-{int(time.time())}",
             "object": "chat.completion",
             "created": int(time.time()),
-            "model": "GLM-4.7-Flash-4bit",
+            "model": "Qwen3.5-9B-MLX",
             "choices": [{
                 "index": 0,
                 "message": {
                     "role": "assistant",
-                    "content": response_text
+                    "content": strip_thinking(response_text)
                 },
                 "finish_reason": "length" if output_tokens >= request.max_tokens else "stop"
             }],
@@ -738,7 +923,7 @@ async def v1_models():
         "object": "list",
         "data": [
             {
-                "id": "glm-4-7-flash-4bit",
+                "id": "qwen3.5-9b-mlx",
                 "object": "model",
                 "created": 0,
                 "owned_by": "local"
@@ -748,7 +933,7 @@ async def v1_models():
 if __name__ == "__main__":
     import uvicorn
     
-    print(f"Starting GLM-4.7-Flash-4bit server on http://{HOST}:{PORT}")
+    print(f"Starting Qwen3.5-9B-MLX server on http://{HOST}:{PORT}")
     print(f"API documentation: http://{HOST}:{PORT}/docs")
     
     uvicorn.run(
