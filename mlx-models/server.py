@@ -19,7 +19,7 @@ import mlx_lm
 from mlx_lm.models import cache
 from mlx_lm.generate import generate_step
 import mlx.core as mx
-import hashlib, os
+import hashlib, os, re, uuid
 import threading
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -27,19 +27,27 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 # Configuration
-MODEL_PATH = "/Users/adamoreilly/model/models/qwen3.5-9b-mlx"
+MODEL_PATH = os.environ.get('MODEL_PATH', "/Users/adamoreilly/.cache/huggingface/hub/models--prism-ml--Ternary-Bonsai-8B-mlx-2bit/snapshots/9260b24298e4211e804663e9f519962cf59f34be")
+MODEL_NAME = os.environ.get('MODEL_NAME', 'Ternary-Bonsai-8B-mlx-2bit')
 HOST = "0.0.0.0"
 PORT = int(os.environ.get('PORT', 8000))
-MAX_CACHEABLE_TOKENS = 400  # Limit cache to 400 tokens (fits condensed prompt)
+MAX_CACHEABLE_TOKENS = 4096  # Cache up to 4096 tokens (fits sweet CLI system prompt ~1339 tokens + tools)
 PREFILL_STEP_SIZE = 8192  # Default mlx_lm value (faster prefill)
-KV_BITS = None  # Disable quantization (RotatingKVCache Quantization NYI)
-MAX_KV_SIZE = 512  # Limit total KV cache to 512 tokens (prevent OOM)
+_kv_bits_raw = os.environ.get('KV_BITS', None)
+try:
+    KV_BITS = int(_kv_bits_raw) if _kv_bits_raw and str(_kv_bits_raw).lower() not in ('none', 'null', '') else None  # KV cache quantization (8=good speed/quality, 4=aggressive, None=off); off by default (required for Ternary-Bonsai rotating KV cache)
+except (ValueError, TypeError):
+    KV_BITS = None
+MAX_KV_SIZE = 4096  # Allow full conversation context (was 512, too small for CLI agent)
 ENABLE_PREFILL = True  # Can be disabled if memory issues persist
 MAX_CACHES = 3  # Maximum number of system prompt caches to keep (prevent OOM)
+DRAFT_MODEL_PATH = os.environ.get('DRAFT_MODEL')  # Disabled by default (regresses 10-18% on 9B with 0.8B draft)
+NUM_DRAFT_TOKENS = int(os.environ.get('NUM_DRAFT_TOKENS', '3'))
 
 # Global model and tokenizer
 model = None
 tokenizer = None
+draft_model = None
 
 # System prompt KV cache
 system_prompt_caches = {}  # hash -> (cache, prefix_len)
@@ -131,36 +139,59 @@ class ThinkingFilter:
         self.buffer = ""
         return result
 
-def get_prefix_tokens(system_prompt):
-    """Return token IDs for prefix up to and including <|im_start|>assistant\n marker."""
-    messages = [
-        {"role": "system", "content": system_prompt},
-        {"role": "user", "content": ""}
-    ]
-    template = tokenizer.apply_chat_template(
-        messages,
-        tokenize=False,
-        add_generation_prompt=True
-    )
+def get_prefix_tokens(system_prompt, messages=None, tools=None):
+    """Return token IDs for the invariant prefix: everything up to and including 
+    <|im_start|>user\n. This prefix is identical across all requests with the same
+    system prompt and tools, regardless of user message content.
+    
+    Args:
+        system_prompt: The system prompt string
+        messages: Optional full messages list (used when building cache, so we 
+                  can match the same template structure)
+        tools: Optional tools list to include in the template
+    """
+    if messages is None:
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": ""}
+        ]
+    kwargs = {"tokenize": False, "add_generation_prompt": True}
+    if tools:
+        kwargs["tools"] = tools
+    template = tokenizer.apply_chat_template(messages, **kwargs)
     tokens = tokenizer.encode(template)
     print(f"[DEBUG] Total tokens in template: {len(tokens)}")
-    # Qwen: find <|im_start|>assistant\n marker for prefix split
-    assistant_marker = tokenizer.encode("<|im_start|>assistant\n")
+    # Qwen: find <|im_start|>user\n marker — this is the invariant split point
+    # Everything up to and including this marker is identical for all requests 
+    # with the same system prompt (only user content varies after it)
+    user_marker = tokenizer.encode("<|im_start|>user\n")
     try:
-        for i in range(len(tokens) - len(assistant_marker) + 1):
-            if tokens[i:i+len(assistant_marker)] == assistant_marker:
-                return tokens[:i+len(assistant_marker)]
+        for i in range(len(tokens) - len(user_marker) + 1):
+            if tokens[i:i+len(user_marker)] == user_marker:
+                return tokens[:i+len(user_marker)]
+        # Fallback: return all tokens for safety
+        print("[WARN] Could not find <|im_start|>user\\n marker in template")
         return tokens
     except Exception:
         return tokens
 
-def get_system_prompt_cache(system_prompt):
+def find_user_marker_pos(tokens):
+    """Find the position of <|im_start|>user\n in tokenized template.
+    Returns the starting index, or -1 if not found."""
+    user_marker = tokenizer.encode("<|im_start|>user\n")
+    for i in range(len(tokens) - len(user_marker) + 1):
+        if tokens[i:i+len(user_marker)] == user_marker:
+            return i
+    return -1
+
+def get_system_prompt_cache(system_prompt, tools=None):
     """Get or create KV cache for system prompt prefix.
     
     NOTE: Caller must hold cache_lock!
     """
-    # Compute hash of system prompt
-    hash_key = hashlib.sha256(system_prompt.encode()).hexdigest()
+    # Compute hash of system prompt + tools (tools change the prefix in the template)
+    cache_key = system_prompt + json.dumps(tools or [], sort_keys=True)
+    hash_key = hashlib.sha256(cache_key.encode()).hexdigest()
     
     if hash_key in system_prompt_caches:
         print("Cache hit for system prompt (hash: {}...)".format(hash_key[:16]))
@@ -178,9 +209,11 @@ def get_system_prompt_cache(system_prompt):
 
     # Create cache
     prompt_cache = cache.make_prompt_cache(model)
+    if draft_model is not None:
+        prompt_cache += cache.make_prompt_cache(draft_model)
     
-    # Get prefix tokens length (system prompt up to <|user|> token)
-    prefix_tokens = get_prefix_tokens(system_prompt)
+    # Get prefix tokens length (system prompt + tools up to <|user|> token)
+    prefix_tokens = get_prefix_tokens(system_prompt, tools=tools)
     prefix_len = len(prefix_tokens) if prefix_tokens else 0
     print("Prefix length: {} tokens".format(prefix_len))
     
@@ -233,16 +266,95 @@ def format_qwen_prompt(user_message: str, system_message: Optional[str] = None) 
         add_generation_prompt=True
     )
 
-def format_messages(messages: List[Dict[str, str]]) -> str:
-    """Format messages using the Qwen chat template."""
+def format_messages(messages: List[Dict[str, str]], tools: Optional[List[Dict[str, Any]]] = None) -> str:
+    """Format messages using the Qwen chat template. Passes tools if provided."""
     if tokenizer is None:
         raise ValueError("Tokenizer not loaded")
     
-    return tokenizer.apply_chat_template(
-        messages,
-        tokenize=False,
-        add_generation_prompt=True
-    )
+    kwargs: Dict[str, Any] = {"tokenize": False, "add_generation_prompt": True}
+    if tools:
+        kwargs["tools"] = tools
+    
+    return tokenizer.apply_chat_template(messages, **kwargs)
+
+def parse_tool_calls(text: str):
+    """Parse <tool_call> blocks from model output.
+    Returns (clean_content, tool_calls_list or None).
+    
+    Supports two formats:
+    1. Qwen3.5 XML format:
+       <tool_call>
+       <function=function_name>
+       <parameter=param1>value1</parameter>
+       <parameter=param2>multi\nline\nvalue</parameter>
+       </function>
+       </tool_call>
+    
+    2. Legacy JSON format (Qwen3-8B):
+       <tool_call>
+       {"name": "...", "arguments": {...}}
+       </tool_call>
+    """
+    tool_call_pattern = r'<tool_call>\s*(.*?)\s*</tool_call>'
+    matches = list(re.finditer(tool_call_pattern, text, re.DOTALL))
+    
+    if not matches:
+        return text, None
+    
+    tool_calls = []
+    for match in matches:
+        block = match.group(1).strip()
+        
+        # Try Qwen3.5 XML format first: <function=NAME>...</function>
+        func_pattern = r'<function=([^>]+)>\s*(.*?)\s*</function>'
+        func_matches = list(re.finditer(func_pattern, block, re.DOTALL))
+        
+        if func_matches:
+            for func_match in func_matches:
+                func_name = func_match.group(1).strip()
+                func_body = func_match.group(2)
+                
+                param_pattern = r'<parameter=([^>]+)>\s*(.*?)\s*</parameter>'
+                param_matches = list(re.finditer(param_pattern, func_body, re.DOTALL))
+                
+                arguments = {}
+                for param_match in param_matches:
+                    param_name = param_match.group(1).strip()
+                    param_value = param_match.group(2).strip()
+                    arguments[param_name] = param_value
+                
+                tool_call = {
+                    "id": f"call_{uuid.uuid4().hex[:8]}",
+                    "type": "function",
+                    "function": {
+                        "name": func_name,
+                        "arguments": json.dumps(arguments)
+                    }
+                }
+                tool_calls.append(tool_call)
+        else:
+            # Fall back to legacy JSON format
+            try:
+                tool_data = json.loads(block)
+                tool_call = {
+                    "id": f"call_{uuid.uuid4().hex[:8]}",
+                    "type": "function",
+                    "function": {
+                        "name": tool_data.get("name", ""),
+                        "arguments": json.dumps(tool_data.get("arguments", {}))
+                    }
+                }
+                tool_calls.append(tool_call)
+            except (json.JSONDecodeError, Exception):
+                pass
+    
+    if not tool_calls:
+        return text, None
+    
+    # Remove tool call blocks from text
+    clean_text = re.sub(tool_call_pattern, '', text, flags=re.DOTALL).strip()
+    
+    return clean_text if clean_text else None, tool_calls
 
 def can_use_system_cache(messages: List[Dict[str, str]]) -> Optional[str]:
     """
@@ -253,7 +365,9 @@ def can_use_system_cache(messages: List[Dict[str, str]]) -> Optional[str]:
     1. First message is a system message
     2. No other system messages
     3. At least one user message after system
-    4. No assistant messages in the prompt (only system -> user chain)
+    
+    (Assistant messages are fine — the cached prefix is just system+user-header,
+    which is identical across all turns.)
     """
     if not messages:
         return None
@@ -263,17 +377,11 @@ def can_use_system_cache(messages: List[Dict[str, str]]) -> Optional[str]:
         return None
     
     system_prompt = messages[0]["content"]
-    import hashlib
     print(f"[DEBUG] System prompt length: {len(system_prompt)} chars, hash: {hashlib.sha256(system_prompt.encode()).hexdigest()[:16]}")
     
     # Check for other system messages
     for msg in messages[1:]:
         if msg["role"] == "system":
-            return None
-    
-    # Check for assistant messages (if any assistant in prompt, can't cache)
-    for msg in messages[1:]:
-        if msg["role"] == "assistant":
             return None
     
     # Must have at least one user message
@@ -286,16 +394,33 @@ def can_use_system_cache(messages: List[Dict[str, str]]) -> Optional[str]:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Load model on startup and clean up on shutdown."""
-    global model, tokenizer
+    global model, tokenizer, draft_model
     
     # Load model on startup
-    print("Loading Qwen3.5-9B-MLX model...")
+    print(f"Loading {MODEL_NAME} model from {MODEL_PATH}...")
     start_time = time.time()
     
     try:
         model, tokenizer = mlx_lm.load(MODEL_PATH, lazy=True)
         load_time = time.time() - start_time
         print(f"✓ Model loaded successfully in {load_time:.2f} seconds")
+        
+        # Load draft model for speculative decoding
+        if DRAFT_MODEL_PATH:
+            print(f"Loading draft model: {DRAFT_MODEL_PATH}...")
+            draft_start = time.time()
+            try:
+                draft_model, draft_tokenizer = mlx_lm.load(DRAFT_MODEL_PATH)
+                draft_load_time = time.time() - draft_start
+                # Verify tokenizer compatibility
+                if draft_tokenizer.vocab_size != tokenizer.vocab_size:
+                    print(f"⚠ Draft model tokenizer vocab mismatch (draft={draft_tokenizer.vocab_size}, main={tokenizer.vocab_size}) — disabling speculative decoding")
+                    draft_model = None
+                else:
+                    print(f"✓ Draft model loaded in {draft_load_time:.2f}s (num_draft_tokens={NUM_DRAFT_TOKENS})")
+            except Exception as e:
+                print(f"⚠ Could not load draft model ({e}) — continuing without speculative decoding")
+                draft_model = None
         
         # Set metal wired memory limit to 2GB — reduces OS paging latency
         # Benchmark-verified: consistent 1.003-1.010x speedup across prompt lengths
@@ -306,29 +431,32 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             print(f"⚠ Could not set wired memory limit: {e}")
         
-        # Warm-up: Trigger JIT compilation to make first request faster
-        print("Warming up model (triggering JIT compilation)...")
+        # Warm-up: Trigger JIT compilation for both prefill AND decode paths
+        # Using a realistic ~300 token prompt ensures prefill path is compiled too
+        print("Warming up model (JIT compilation for prefill + decode)...")
         warmup_start = time.time()
         try:
-            # Do a small generation to compile the model
+            # Build a realistic-sized warmup prompt (~300 tokens) to compile prefill
+            warmup_text = "You are a helpful assistant. Be concise.\n\n" + (
+                "This is a warmup prompt designed to exercise the prefill path. " * 20
+            )
             warmup_result = mlx_lm.generate(
                 model, tokenizer, 
-                "Hello",  # Short prompt
-                max_tokens=2,  # Minimal generation
+                warmup_text,
+                max_tokens=5,  # Also compile the decode path
                 verbose=False,
                 prefill_step_size=PREFILL_STEP_SIZE,
                 kv_bits=KV_BITS,
                 max_kv_size=MAX_KV_SIZE
             )
             warmup_time = time.time() - warmup_start
-            print(f"✓ Warm-up completed in {warmup_time:.2f} seconds")
-            print(f"  (First user request will be faster due to JIT compilation)")
+            print(f"✓ Warm-up completed in {warmup_time:.2f}s (prefill + decode JIT-compiled)")
             
             # Prefill system prompt cache for faster CLI requests
             print("Prefilling system prompt cache for CLI agent...")
             try:
                 # Load condensed system prompt from file
-                condensed_prompt_path = "cli_system_prompt_condensed_raw.txt"
+                condensed_prompt_path = "cli_system_prompt.txt"
                 import os
                 if os.path.exists(condensed_prompt_path):
                     with open(condensed_prompt_path, "r", encoding="utf-8") as f:
@@ -338,56 +466,38 @@ async def lifespan(app: FastAPI):
                     current_date = datetime.now().strftime("%Y-%m-%d")
                     current_year = datetime.now().strftime("%Y")
                     system_prompt = raw_prompt.format(current_date=current_date, current_year=current_year)
-                    import hashlib
-                    hash_key = hashlib.sha256(system_prompt.encode()).hexdigest()
-                    # Create and prefill cache (same logic as get_system_prompt_cache)
-                    from mlx_lm.models import cache
-                    import mlx.core as mx
-                    prompt_cache = cache.make_prompt_cache(model)
-                    # Get prefix tokens (system prompt up to generation prompt marker)
-                    messages = [
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": ""}
-                    ]
-                    template = tokenizer.apply_chat_template(
-                        messages,
-                        tokenize=False,
-                        add_generation_prompt=True
-                    )
-                    tokens = tokenizer.encode(template)
-                    # Qwen template: ...<|im_start|>assistant\n is the generation prompt
-                    # Find <|im_start|>assistant marker to split prefix
-                    assistant_marker = tokenizer.encode("<|im_start|>assistant\n")
-                    try:
-                        # Find the subsequence in tokens
-                        for i in range(len(tokens) - len(assistant_marker) + 1):
-                            if tokens[i:i+len(assistant_marker)] == assistant_marker:
-                                idx = i + len(assistant_marker) - 1
-                                prefix_tokens = tokens[:idx+1]
-                                break
-                        else:
-                            prefix_tokens = tokens
-                    except Exception:
-                        prefix_tokens = tokens
-                    prefix_len = len(prefix_tokens)
-                    print(f"Prefix length: {prefix_len} tokens")
-                    # Prefill cache with prefix tokens
-                    with mx.stream(mx.default_stream(mx.default_device())):
-                        mx_tokens = mx.array([prefix_tokens])
-                        _ = model(mx_tokens, cache=prompt_cache)
-                    print(f"Cache prefilled with {prefix_len} tokens")
-                    # Store in global cache dict
-                    import threading
+                    # Use the same cache creation path as runtime requests (no tools for this pre-warm)
                     with cache_lock:
-                        system_prompt_caches[hash_key] = (prompt_cache, prefix_len)
-                    print(f"System prompt cache ready (hash: {hash_key[:16]}...)")
+                        prompt_cache, prefix_len = get_system_prompt_cache(system_prompt, tools=None)
+                    print(f"System prompt cache ready (prefix_len={prefix_len})")
                     
-                    # Warm-up generation step to compile kernels for autoregressive generation
-                    # Skipped due to memory constraints - will be compiled on first request
+                    # Warm-up: compile the exact code path real requests use
+                    # (full prompt string + cache, same as the /chat/completions endpoint)
+                    print("Warming up cache-aware request path (same as live requests)...")
                     try:
-                        pass  # Generation warm-up skipped to conserve memory
+                        messages = [
+                            {"role": "system", "content": system_prompt},
+                            {"role": "user", "content": "OK"}
+                        ]
+                        full_prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+                        _ = mlx_lm.generate(
+                            model, tokenizer, full_prompt,  # Full string prompt — exactly like live requests
+                            max_tokens=3, verbose=False,
+                            prefill_step_size=PREFILL_STEP_SIZE,
+                            prompt_cache=prompt_cache,
+                            kv_bits=KV_BITS,
+                            max_kv_size=MAX_KV_SIZE
+                        )
+                        # Trim cache back to original prefix
+                        full_tokens = tokenizer.encode(full_prompt)
+                        total_tokens = len(full_tokens) + 3
+                        added_tokens = max(0, total_tokens - prefix_len)
+                        if added_tokens > 0:
+                            from mlx_lm.models import cache as cache_module
+                            cache_module.trim_prompt_cache(prompt_cache, added_tokens)
+                        print("✓ Cache-aware request path compiled (full-prompt + cache pattern)")
                     except Exception as e:
-                        print(f"⚠ Generation warm-up skipped: {e}")
+                        print(f"⚠ Cache-aware warm-up skipped (non-critical): {e}")
                 else:
                     print("⚠ Condensed prompt file not found, skipping cache prefill")
             except Exception as e:
@@ -419,7 +529,9 @@ class GenerationRequest(BaseModel):
 class ChatMessage(BaseModel):
     """Chat message for conversation."""
     role: str = Field(..., description="Role: 'user', 'assistant', or 'system'")
-    content: str = Field(..., description="Message content")
+    content: Optional[str] = Field(None, description="Message content (optional if tool_calls present)")
+    tool_calls: Optional[List[Dict[str, Any]]] = Field(None, description="Tool calls from assistant")
+    tool_call_id: Optional[str] = Field(None, description="Tool call ID for tool responses")
 
 class ChatRequest(BaseModel):
     """Request model for chat completion."""
@@ -427,18 +539,20 @@ class ChatRequest(BaseModel):
     max_tokens: int = Field(200, ge=1, le=2048)
     temperature: float = Field(0.7, ge=0.0, le=2.0)
     stream: bool = Field(False)
+    tools: Optional[List[Dict[str, Any]]] = Field(None, description="Available tools for function calling")
+    tool_choice: Optional[Any] = Field(None, description="Tool choice: 'auto', 'none', or specific tool")
 
 class GenerationResponse(BaseModel):
     """Response model for generation."""
     text: str = Field(..., description="Generated text")
     created_at: str = Field(..., description="ISO timestamp")
-    model: str = Field("Qwen3.5-9B-MLX", description="Model name")
+    model: str = Field(MODEL_NAME, description="Model name")
     usage: Dict[str, int] = Field(..., description="Token usage statistics")
 
 # Create FastAPI app
 app = FastAPI(
-    title="Qwen3.5-9B-MLX Server",
-    description="Local server for Qwen3.5-9B-MLX model with streaming",
+    title=f"{MODEL_NAME} Server",
+    description=f"Local server for {MODEL_NAME} model with streaming",
     version="1.0.0",
     lifespan=lifespan
 )
@@ -456,7 +570,7 @@ app.add_middleware(
 async def root():
     """Root endpoint with server info."""
     return {
-        "message": "Qwen3.5-9B-MLX Server",
+        "message": f"{MODEL_NAME} Server",
         "status": "running",
         "endpoints": {
             "GET /": "This info page",
@@ -485,11 +599,11 @@ async def model_info():
         raise HTTPException(status_code=503, detail="Model not loaded")
     
     return {
-        "model": "Qwen3.5-9B-MLX",
+        "model": MODEL_NAME,
         "format": "MLX 4-bit quantized",
         "path": MODEL_PATH,
         "status": "loaded",
-        "parameters": "9B",
+        "parameters": "4B",
         "context_window": "128K tokens",
         "loaded_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     }
@@ -541,7 +655,9 @@ async def generate(request: GenerationRequest):
         prefill_step_size=PREFILL_STEP_SIZE,
         prompt_cache=prompt_cache if prompt_cache else None,
         kv_bits=KV_BITS,
-        max_kv_size=MAX_KV_SIZE
+        max_kv_size=MAX_KV_SIZE,
+        draft_model=draft_model,
+        num_draft_tokens=NUM_DRAFT_TOKENS
     )
     
     # Remove prompt from response
@@ -597,7 +713,9 @@ async def generate_stream_generator(prompt: str, max_tokens: int):
             max_tokens=max_tokens,
             prefill_step_size=PREFILL_STEP_SIZE,
             kv_bits=KV_BITS,
-            max_kv_size=MAX_KV_SIZE
+            max_kv_size=MAX_KV_SIZE,
+            draft_model=draft_model,
+            num_draft_tokens=NUM_DRAFT_TOKENS
         )
         
         # Process streaming responses
@@ -651,7 +769,13 @@ async def generate_stream_generator(prompt: str, max_tokens: int):
         yield f"data: {json.dumps(error_data)}\n\n"
 
 async def generate_openai_stream_generator(prompt: str, max_tokens: int, request_id: str = None, model_name: str = "Qwen3.5-9B-MLX", prompt_cache=None, prefix_len=0):
-    """Generator function for OpenAI-compatible streaming responses."""
+    """Generator function for OpenAI-compatible streaming responses.
+    
+    When prompt_cache is provided with prefix_len > 0, the cached KV states
+    cover the first prefix_len tokens (system prompt + user tag). We slice the
+    prompt to only pass the UNCACHED suffix to mlx_lm.stream_generate, avoiding
+    redundant prefill of the system prompt on every request.
+    """
     if model is None or tokenizer is None:
         # Return OpenAI-style error
         error_chunk = {
@@ -678,18 +802,40 @@ async def generate_openai_stream_generator(prompt: str, max_tokens: int, request
     if not request_id:
         request_id = f"chatcmpl-{int(time.time())}"
     
+    # Determine the actual prompt to pass to the model
+    # If we have a valid cache, slice to only uncached tokens
+    model_prompt = prompt  # default: full string prompt
+    try:
+        if prompt_cache is not None and prefix_len > 0:
+            # Tokenize the full prompt and slice off the cached prefix
+            full_tokens = tokenizer.encode(prompt)
+            user_pos = find_user_marker_pos(full_tokens)
+            if user_pos >= 0:
+                user_marker = tokenizer.encode("<|im_start|>user\n")
+                suffix_start = user_pos + len(user_marker)
+                suffix_tokens = full_tokens[suffix_start:]
+                model_prompt = mx.array(suffix_tokens)
+                print(f"[DEBUG] Cache active: prefix_len={prefix_len}, full={len(full_tokens)} tokens, "
+                      f"user_marker at pos={user_pos}, suffix={len(suffix_tokens)} tokens -> skipping prefill")
+            else:
+                print(f"[DEBUG] Cache present but user marker not found in prompt — falling back to full prefill")
+    except Exception as e:
+        print(f"[DEBUG] Cache slicing failed ({e}), falling back to full prefill")
+    
     try:
         print(f"[DEBUG] generate_openai_stream_generator: prompt_cache={'present' if prompt_cache else None}, prefix_len={prefix_len}")
-        # Get streaming generator
+        # Get streaming generator — pass sliced tokens when cache is active
         stream = mlx_lm.stream_generate(
             model,
             tokenizer,
-            prompt,
+            model_prompt,
             max_tokens=max_tokens,
             prefill_step_size=PREFILL_STEP_SIZE,
             kv_bits=KV_BITS,
             max_kv_size=MAX_KV_SIZE,
-            prompt_cache=prompt_cache if prompt_cache else None
+            prompt_cache=prompt_cache if prompt_cache else None,
+            draft_model=draft_model,
+            num_draft_tokens=NUM_DRAFT_TOKENS
         )
         
         # Process streaming responses
@@ -804,29 +950,54 @@ async def chat_completions(request: ChatRequest):
     if model is None or tokenizer is None:
         raise HTTPException(status_code=503, detail="Model not loaded")
     
-    # Convert messages to list of dicts for tokenizer
-    messages = [{"role": m.role, "content": m.content} for m in request.messages]
+    # Convert messages to list of dicts for tokenizer (include tool_calls and tool_call_id if present)
+    messages = []
+    for m in request.messages:
+        msg_dict = {"role": m.role}
+        if m.content is not None:
+            msg_dict["content"] = m.content
+        if m.tool_calls:
+            # Qwen3.5 chat template expects arguments as a dict (not JSON string).
+            # Convert OpenAI-format JSON-string arguments to dict for Jinja |items filter.
+            tc_list = []
+            for tc in m.tool_calls:
+                tc_copy = dict(tc)
+                fn = tc_copy.get("function", {})
+                if isinstance(fn.get("arguments"), str):
+                    try:
+                        fn["arguments"] = json.loads(fn["arguments"])
+                    except (json.JSONDecodeError, TypeError):
+                        pass
+                tc_copy["function"] = fn
+                tc_list.append(tc_copy)
+            msg_dict["tool_calls"] = tc_list
+        if m.tool_call_id:
+            msg_dict["tool_call_id"] = m.tool_call_id
+        messages.append(msg_dict)
+    
+    # Extract tools
+    tools = request.tools
     
     # Ensure there's at least one user message
     user_messages = [m for m in request.messages if m.role == "user"]
     if not user_messages:
         raise HTTPException(status_code=400, detail="No user messages found")
     
-    # Format prompt using Qwen chat template
-    formatted_prompt = format_messages(messages)
+    # Format prompt using Qwen chat template (pass tools if provided)
+    formatted_prompt = format_messages(messages, tools=tools)
     
     # Handle streaming vs non-streaming
     if request.stream:
         # Check if we can use system prompt caching
         system_prompt = can_use_system_cache(messages)
-        print(f"Cache check: system_prompt={'present' if system_prompt else 'None'}, messages count={len(messages)}")
+        print(f"Cache check: system_prompt={'present' if system_prompt else 'None'}, messages count={len(messages)}, tools={'present' if tools else 'none'}")
         prompt_cache = None
         prefix_len = 0
         
         if system_prompt:
             try:
                 with cache_lock:
-                    prompt_cache, prefix_len = get_system_prompt_cache(system_prompt)
+                    prompt_cache, prefix_len = get_system_prompt_cache(system_prompt, tools)
             except Exception as e:
                 print(f"Warning: Failed to get system prompt cache: {e}")
                 prompt_cache = None
@@ -838,40 +1009,65 @@ async def chat_completions(request: ChatRequest):
                 formatted_prompt, 
                 request.max_tokens,
                 request_id=request_id,
-                model_name="Qwen3.5-9B-MLX",
+                model_name=MODEL_NAME,
                 prompt_cache=prompt_cache,
                 prefix_len=prefix_len
             ),
-            media_type="text/event-stream"
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache, no-transform",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",  # Disable nginx buffering
+                "Content-Encoding": "identity"  # Prevent gzip buffering
+            }
         )
     else:
         # Check if we can use system prompt caching
         system_prompt = can_use_system_cache(messages)
-        print(f"Cache check: system_prompt={'present' if system_prompt else 'None'}, messages count={len(messages)}")
+        print(f"Cache check: system_prompt={'present' if system_prompt else 'None'}, messages count={len(messages)}, tools={'present' if tools else 'none'}")
         prompt_cache = None
         prefix_len = 0
         
         if system_prompt:
             try:
                 with cache_lock:
-                    prompt_cache, prefix_len = get_system_prompt_cache(system_prompt)
+                    prompt_cache, prefix_len = get_system_prompt_cache(system_prompt, tools)
             except Exception as e:
                 print(f"Warning: Failed to get system prompt cache: {e}")
                 prompt_cache = None
         
-        # Generate response
+        # Generate response — slice prompt to only uncached tokens when cache is active
         print(f"Generation: cache={'present' if prompt_cache else 'None'}, prefix_len={prefix_len}")
         start_gen_time = time.time()
+        
+        # Determine model prompt (slice if cache is active)
+        model_prompt = formatted_prompt
+        if prompt_cache is not None and prefix_len > 0:
+            try:
+                full_tokens = tokenizer.encode(formatted_prompt)
+                user_pos = find_user_marker_pos(full_tokens)
+                if user_pos >= 0:
+                    user_marker = tokenizer.encode("<|im_start|>user\n")
+                    suffix_start = user_pos + len(user_marker)
+                    suffix_tokens = full_tokens[suffix_start:]
+                    model_prompt = mx.array(suffix_tokens)
+                    print(f"[DEBUG] Non-streaming cache active: prefix_len={prefix_len}, full={len(full_tokens)}, "
+                          f"suffix={len(suffix_tokens)} tokens -> skipping prefill")
+            except Exception as e:
+                print(f"[DEBUG] Non-streaming cache slicing failed ({e}), falling back to full prefill")
+        
         response_text = mlx_lm.generate(
             model,
             tokenizer,
-            formatted_prompt,
+            model_prompt,
             max_tokens=request.max_tokens,
             verbose=False,
             prefill_step_size=PREFILL_STEP_SIZE,
             prompt_cache=prompt_cache if prompt_cache else None,
             kv_bits=KV_BITS,
-            max_kv_size=MAX_KV_SIZE
+            max_kv_size=MAX_KV_SIZE,
+            draft_model=draft_model,
+            num_draft_tokens=NUM_DRAFT_TOKENS
         )
         gen_time = time.time() - start_gen_time
         print(f"Generation time: {gen_time:.2f}s")
@@ -882,38 +1078,53 @@ async def chat_completions(request: ChatRequest):
         
         response_text = strip_thinking(response_text.strip())
         
+        # Parse tool calls from model output
+        clean_content, tool_calls = parse_tool_calls(response_text)
+        
+        # Build assistant message (with tool_calls if parsed)
+        assistant_message: Dict[str, Any] = {"role": "assistant"}
+        if tool_calls:
+            assistant_message["tool_calls"] = tool_calls
+            assistant_message["content"] = clean_content  # may be None
+            finish_reason = "tool_calls"
+        else:
+            assistant_message["content"] = response_text if response_text else ""
+            finish_reason = "stop"
+        
         # Trim cache back to prefix length if used
+        display_text = response_text  # use full text for token counting
         if prompt_cache:
-            # Determine how many tokens were added after prefix
-            total_tokens = len(tokenizer.encode(formatted_prompt)) + len(tokenizer.encode(response_text))
+            total_tokens = len(tokenizer.encode(formatted_prompt)) + len(tokenizer.encode(display_text))
             added_tokens = total_tokens - prefix_len
             print(f"Cache trimming: prefix_len={prefix_len}, total_tokens={total_tokens}, added_tokens={added_tokens}")
             if added_tokens > 0:
                 cache.trim_prompt_cache(prompt_cache, added_tokens)
                 print(f"Cache trimmed, remaining cache size approx {prefix_len} tokens")
         
-        # Calculate token counts (mlx_lm.generate returns only generated tokens)
+        # Calculate token counts
         input_tokens = len(tokenizer.encode(formatted_prompt))
-        output_tokens = len(tokenizer.encode(response_text))
+        output_tokens = len(tokenizer.encode(display_text))
+        
+        # Override finish_reason if max_tokens reached
+        if output_tokens >= request.max_tokens:
+            finish_reason = "length"
         
         # Return OpenAI-compatible response
         return {
             "id": f"chatcmpl-{int(time.time())}",
             "object": "chat.completion",
             "created": int(time.time()),
-            "model": "Qwen3.5-9B-MLX",
+            "model": MODEL_NAME,
             "choices": [{
                 "index": 0,
-                "message": {
-                    "role": "assistant",
-                    "content": strip_thinking(response_text)
-                },
-                "finish_reason": "length" if output_tokens >= request.max_tokens else "stop"
+                "message": assistant_message,
+                "finish_reason": finish_reason
             }],
             "usage": {
                 "prompt_tokens": input_tokens,
                 "completion_tokens": output_tokens,
-                "total_tokens": input_tokens + output_tokens
+                "total_tokens": input_tokens + output_tokens,
+                "generation_time_ms": int(gen_time * 1000)
             }
         }
 
@@ -932,8 +1143,40 @@ async def v1_models():
     }
 if __name__ == "__main__":
     import uvicorn
+    import argparse
     
-    print(f"Starting Qwen3.5-9B-MLX server on http://{HOST}:{PORT}")
+    parser = argparse.ArgumentParser(description=f"{MODEL_NAME} Local Server")
+    parser.add_argument("--model-path", type=str, default=MODEL_PATH,
+                        help=f"Model path (default: {MODEL_PATH})")
+    parser.add_argument("--host", type=str, default=HOST, help=f"Host to bind (default: {HOST})")
+    parser.add_argument("--port", type=int, default=PORT, help=f"Port to bind (default: {PORT})")
+    parser.add_argument("--draft-model", type=str, default=DRAFT_MODEL_PATH,
+                        help="Draft model for speculative decoding (default: disabled)")
+    parser.add_argument("--num-draft-tokens", type=int, default=NUM_DRAFT_TOKENS,
+                        help="Number of draft tokens (default: 3)")
+    parser.add_argument("--no-draft", action="store_true",
+                        help="Disable speculative decoding entirely")
+    parser.add_argument("--kv-bits", type=int, default=KV_BITS,
+                        help="KV cache quantization bits (8=good speed/quality, 4=aggressive, None=off)")
+    args = parser.parse_args()
+    
+    MODEL_PATH = args.model_path
+    HOST = args.host
+    PORT = args.port
+    KV_BITS = args.kv_bits if args.kv_bits else None
+    if args.no_draft:
+        DRAFT_MODEL_PATH = None
+        NUM_DRAFT_TOKENS = 3
+    else:
+        DRAFT_MODEL_PATH = args.draft_model
+        NUM_DRAFT_TOKENS = args.num_draft_tokens
+    
+    print(f"Starting {MODEL_NAME} server on http://{HOST}:{PORT}")
+    print(f"KV cache quantization: {KV_BITS}-bit" if KV_BITS else "KV cache quantization: off")
+    if DRAFT_MODEL_PATH:
+        print(f"Speculative decoding: draft_model={DRAFT_MODEL_PATH}, num_draft_tokens={NUM_DRAFT_TOKENS}")
+    else:
+        print(f"Speculative decoding: disabled")
     print(f"API documentation: http://{HOST}:{PORT}/docs")
     
     uvicorn.run(
