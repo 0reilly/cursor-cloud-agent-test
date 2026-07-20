@@ -21,6 +21,7 @@ from datetime import datetime, timedelta, date
 from pathlib import Path
 from rich.console import Console, Group
 import threading
+import queue as _queue
 from rich.align import Align
 from rich.markdown import Markdown
 from rich.panel import Panel
@@ -239,6 +240,656 @@ class LiveManager:
             self.live = None
 
 
+class PinnedBar:
+    """Always-visible input bar pinned to the bottom of the terminal.
+
+    Reserves the bottom RESERVED rows via a terminal scroll region so Rich
+    Live tiles scroll only in the rows above.  Runs its own raw-mode key
+    reader thread.  Falls back gracefully when stdin is not a TTY.
+
+    Visual layout (bottom of screen):
+        row H-1  │ ⣾ 3s — type to queue next prompt  /alert <msg> to notify    │  (dim status)
+        row H    │ › hello wor▋                                                  │  (input)
+    """
+
+    RESERVED = 2
+    SPINNERS = list("⣾⣽⣻⢿⡿⣟⣯⣷")
+
+    def __init__(self, q: '_queue.Queue', on_working_input: 'Optional[Callable]' = None):
+        self._q = q
+        self._on_working_input = on_working_input
+        self._buf: List[str] = []
+        self._cursor: int = 0
+        self._lock = threading.Lock()
+        self._working = False
+        self._work_start: Optional[float] = None
+        self._running = False
+        self._paused = threading.Event()
+        self._reader_thread: Optional[threading.Thread] = None
+        self._redraw_thread: Optional[threading.Thread] = None
+        self._old_termios: Optional[list] = None
+        self._fd: int = -1
+        self._active = False
+        self._history: List[str] = []
+        self._hist_idx: int = -1
+        self._hist_draft: str = ""
+        self._last_render: str = ""
+
+    # ------------------------------------------------------------------
+    # Lifecycle
+    # ------------------------------------------------------------------
+
+    def setup(self) -> bool:
+        """Set up scroll region and start threads.  Returns True on success."""
+        # The ANSI scroll-region bar is opt-in only. In Cursor/VSCode-style
+        # terminals it can race with Rich Live and leak CSI text like
+        # "[39;1H[2K". PromptInputBar is the default robust path.
+        if str(os.environ.get("SWEET_PINNED_BAR", "")).strip().lower() not in ("ansi", "1", "true", "on", "yes"):
+            return False
+        if str(os.environ.get("TERM", "")).strip().lower() in ("", "dumb"):
+            return False
+        if not (sys.stdin.isatty() and sys.stdout.isatty()):
+            return False
+        try:
+            import termios as _tm
+            import tty as _tty
+        except ImportError:
+            return False
+        self._fd = sys.stdin.fileno()
+        try:
+            self._old_termios = _tm.tcgetattr(self._fd)
+            _tty.setcbreak(self._fd)
+        except Exception:
+            return False
+
+        h, _ = self._term_size()
+        self._setup_scroll_region(h)
+
+        self._running = True
+        self._active = True
+
+        self._redraw_thread = threading.Thread(
+            target=self._redraw_loop, daemon=True, name="pinned-bar-redraw"
+        )
+        self._redraw_thread.start()
+        self._reader_thread = threading.Thread(
+            target=self._reader_loop, daemon=True, name="pinned-bar-reader"
+        )
+        self._reader_thread.start()
+
+        try:
+            import signal as _sig
+            _sig.signal(_sig.SIGWINCH, lambda *_: self._on_resize())
+        except Exception:
+            pass
+
+        import atexit
+        atexit.register(self.teardown)
+
+        self._draw()
+        return True
+
+    def teardown(self):
+        if not self._active:
+            return
+        self._running = False
+        self._active = False
+        try:
+            h, _ = self._term_size()
+            out = [f"\033[1;{h}r"]  # restore full scroll region
+            for row in range(h - self.RESERVED + 1, h + 1):
+                out.append(f"\033[{row};1H\033[2K")
+            out.append(f"\033[{h - self.RESERVED};1H\n")
+            self._write_terminal("".join(out))
+        except Exception:
+            pass
+        try:
+            if self._old_termios is not None:
+                import termios as _tm
+                _tm.tcsetattr(self._fd, _tm.TCSADRAIN, self._old_termios)
+        except Exception:
+            pass
+
+    def pause(self):
+        """Yield stdin to a caller (e.g. arrow-key menu). Must call resume() after."""
+        self._paused.set()
+        time.sleep(0.12)  # let reader notice
+        try:
+            if self._old_termios is not None:
+                import termios as _tm
+                _tm.tcsetattr(self._fd, _tm.TCSADRAIN, self._old_termios)
+        except Exception:
+            pass
+
+    def resume(self):
+        """Re-take stdin after pause()."""
+        try:
+            import tty as _tty
+            _tty.setcbreak(self._fd)
+        except Exception:
+            pass
+        h, _ = self._term_size()
+        self._setup_scroll_region(h)
+        self._paused.clear()
+        self._draw()
+
+    # ------------------------------------------------------------------
+    # State
+    # ------------------------------------------------------------------
+
+    def set_working(self, working: bool):
+        with self._lock:
+            self._working = working
+            if working:
+                if self._work_start is None:
+                    self._work_start = time.time()
+            else:
+                self._work_start = None
+        self._draw()
+
+    # ------------------------------------------------------------------
+    # Terminal helpers
+    # ------------------------------------------------------------------
+
+    def _term_size(self):
+        try:
+            s = os.get_terminal_size()
+            lines = int(getattr(s, "lines", 0) or 0)
+            columns = int(getattr(s, "columns", 0) or 0)
+            if lines < (self.RESERVED + 2):
+                lines = 24
+            if columns < 20:
+                columns = 80
+            return lines, columns
+        except Exception:
+            return 24, 80
+
+    def _setup_scroll_region(self, h: int):
+        scroll_bottom = max(h - self.RESERVED, 1)
+        self._write_terminal(f"\033[1;{scroll_bottom}r")
+
+    def _write_terminal(self, text: str):
+        """Write raw ANSI while holding Rich's console lock.
+
+        The previous pinned bar wrote directly from a background thread. Rich
+        Live was also writing at the same time, so CSI sequences could be split
+        and appear literally as `[39;1H[2K...`.  Sharing Rich's own lock keeps
+        ANSI sequences atomic with console.print()/Live writes.
+        """
+        try:
+            lock = getattr(console, "_lock", None)
+            if lock is None:
+                sys.stdout.write(text)
+                sys.stdout.flush()
+                return
+            with lock:
+                sys.stdout.write(text)
+                sys.stdout.flush()
+        except Exception:
+            pass
+
+    def _on_resize(self):
+        h, _ = self._term_size()
+        self._setup_scroll_region(h)
+        self._draw()
+
+    # ------------------------------------------------------------------
+    # Rendering
+    # ------------------------------------------------------------------
+
+    def _draw(self):
+        if not self._active or self._paused.is_set():
+            return
+        try:
+            h, w = self._term_size()
+            with self._lock:
+                buf = list(self._buf)
+                cursor = self._cursor
+                working = self._working
+                work_start = self._work_start
+
+            # Status line (row h-1)
+            if working and work_start:
+                elapsed = int(time.time() - work_start)
+                spin = self.SPINNERS[int(time.time() * 8) % len(self.SPINNERS)]
+                status = f" {spin} {elapsed}s — type to queue next prompt · /alert <msg> to notify "
+            else:
+                status = "  ↩ Enter to send · /help for commands  "
+            if len(status) > w:
+                status = status[:w - 1]
+
+            # Input line (row h): show block cursor at cursor position
+            prefix = "› "
+            max_input_w = max(4, w - len(prefix) - 1)
+            # Compute visible window around cursor
+            if len(buf) <= max_input_w:
+                vis_buf = buf
+                vis_cur = cursor
+            else:
+                half = max_input_w // 2
+                start = max(0, cursor - half)
+                end = start + max_input_w
+                if end > len(buf):
+                    end = len(buf)
+                    start = max(0, end - max_input_w)
+                vis_buf = buf[start:end]
+                vis_cur = cursor - start
+            before = "".join(vis_buf[:vis_cur])
+            at_ch = vis_buf[vis_cur] if vis_cur < len(vis_buf) else " "
+            after = "".join(vis_buf[vis_cur + 1:])
+            input_body = (
+                before
+                + "\033[7m" + at_ch + "\033[0m"  # reverse-video block cursor
+                + after
+            )
+
+            out = (
+                f"\033[{h - 1};1H\033[2K\033[2m{status}\033[0m"
+                f"\033[{h};1H\033[2K\033[1;33m›\033[0m {input_body}"
+                # Return cursor to bottom of scroll region so Rich's Live
+                # cursor-up sequences start from the right row.
+                f"\033[{h - self.RESERVED};1H"
+            )
+            if out == self._last_render:
+                return
+            self._last_render = out
+            self._write_terminal(out)
+        except Exception:
+            pass
+
+    # ------------------------------------------------------------------
+    # Threads
+    # ------------------------------------------------------------------
+
+    def _redraw_loop(self):
+        while self._running:
+            try:
+                if not self._paused.is_set():
+                    self._draw()
+            except Exception:
+                pass
+            # Keep a subtle Claude-style animation without competing with
+            # Rich's Live refresh loop on every frame.
+            time.sleep(0.25)
+
+    def _reader_loop(self):
+        import select as _sel
+        while self._running:
+            if self._paused.is_set():
+                time.sleep(0.05)
+                continue
+            try:
+                r, _, _ = _sel.select([self._fd], [], [], 0.05)
+                if not r:
+                    continue
+                data = os.read(self._fd, 32)
+                if not data:
+                    continue
+                redraw = True
+                with self._lock:
+                    redraw = self._handle_input(data)
+                if redraw:
+                    self._draw()
+            except KeyboardInterrupt:
+                try:
+                    import signal as _sig
+                    os.kill(os.getpid(), _sig.SIGINT)
+                except Exception:
+                    pass
+            except Exception:
+                pass
+
+    # ------------------------------------------------------------------
+    # Key handling
+    # ------------------------------------------------------------------
+
+    def _handle_input(self, data: bytes) -> bool:
+        """Process raw bytes.  Lock must be held.  Returns True if redraw needed."""
+        i = 0
+        while i < len(data):
+            b = data[i:i+1]
+
+            if b in (b'\r', b'\n'):
+                line = "".join(self._buf)
+                if line.strip():
+                    self._history.append(line)
+                self._hist_idx = -1
+                self._hist_draft = ""
+                self._buf.clear()
+                self._cursor = 0
+                if self._working and self._on_working_input and line.strip():
+                    # Route to mid-turn handler (handles /alert, /msg etc.)
+                    try:
+                        self._on_working_input(line.strip())
+                    except Exception:
+                        self._q.put(line)
+                else:
+                    self._q.put(line)
+                i += 1
+
+            elif b in (b'\x7f', b'\x08'):  # backspace / DEL
+                if self._cursor > 0:
+                    del self._buf[self._cursor - 1]
+                    self._cursor -= 1
+                i += 1
+
+            elif b == b'\x03':  # Ctrl-C → SIGINT to main thread
+                try:
+                    import signal as _sig
+                    os.kill(os.getpid(), _sig.SIGINT)
+                except Exception:
+                    pass
+                i += 1
+
+            elif b == b'\x04':  # Ctrl-D → EOF
+                self._q.put(None)
+                i += 1
+
+            elif b == b'\x01':  # Ctrl-A (home)
+                self._cursor = 0
+                i += 1
+
+            elif b == b'\x05':  # Ctrl-E (end)
+                self._cursor = len(self._buf)
+                i += 1
+
+            elif b == b'\x0b':  # Ctrl-K (kill to end of line)
+                del self._buf[self._cursor:]
+                i += 1
+
+            elif b == b'\x15':  # Ctrl-U (kill line)
+                self._buf.clear()
+                self._cursor = 0
+                i += 1
+
+            elif b == b'\x1b':  # escape sequence
+                rest = data[i + 1:]
+                if rest[:1] == b'[':
+                    code = rest[1:2]
+                    if code == b'A':    # up arrow → history prev
+                        self._hist_prev()
+                        i += 3
+                    elif code == b'B':  # down arrow → history next
+                        self._hist_next()
+                        i += 3
+                    elif code == b'C':  # right arrow
+                        if self._cursor < len(self._buf):
+                            self._cursor += 1
+                        i += 3
+                    elif code == b'D':  # left arrow
+                        if self._cursor > 0:
+                            self._cursor -= 1
+                        i += 3
+                    elif code == b'3' and rest[2:3] == b'~':  # Delete key
+                        if self._cursor < len(self._buf):
+                            del self._buf[self._cursor]
+                        i += 4
+                    else:
+                        i += 1
+                else:
+                    i += 1  # bare ESC, ignore
+
+            elif b[0] >= 0x20:  # printable ASCII or UTF-8 lead byte
+                try:
+                    ch = b.decode('utf-8')
+                except UnicodeDecodeError:
+                    # Multi-byte UTF-8: grab up to 3 more bytes
+                    for extra in (3, 2, 1):
+                        try:
+                            ch = data[i:i + 1 + extra].decode('utf-8')
+                            i += extra
+                            break
+                        except (UnicodeDecodeError, IndexError):
+                            pass
+                    else:
+                        i += 1
+                        continue
+                self._buf.insert(self._cursor, ch)
+                self._cursor += 1
+                i += 1
+
+            else:
+                i += 1
+
+        return True
+
+    def _hist_prev(self):
+        if not self._history:
+            return
+        if self._hist_idx == -1:
+            self._hist_draft = "".join(self._buf)
+            self._hist_idx = len(self._history) - 1
+        elif self._hist_idx > 0:
+            self._hist_idx -= 1
+        line = self._history[self._hist_idx]
+        self._buf = list(line)
+        self._cursor = len(self._buf)
+
+    def _hist_next(self):
+        if self._hist_idx == -1:
+            return
+        self._hist_idx += 1
+        if self._hist_idx >= len(self._history):
+            self._hist_idx = -1
+            line = self._hist_draft
+        else:
+            line = self._history[self._hist_idx]
+        self._buf = list(line)
+        self._cursor = len(self._buf)
+
+
+class PromptInputBar:
+    """Always-on input powered by prompt_toolkit.
+
+    prompt_toolkit owns the terminal input line and patch_stdout keeps Rich
+    output above it instead of letting tool/reasoning output overwrite typed
+    characters. This is much more robust than hand-written cursor positioning.
+    """
+
+    def __init__(self, q: '_queue.Queue', on_working_input: 'Optional[Callable]' = None):
+        self._q = q
+        self._on_working_input = on_working_input
+        self._working = False
+        self._work_start: Optional[float] = None
+        self._active = False
+        self._paused = threading.Event()
+        self._reader_thread: Optional[threading.Thread] = None
+        self._refresh_thread: Optional[threading.Thread] = None
+        self._session = None
+        self._patched_ctx = None
+        self._prompt_active = threading.Event()
+        self._queued_count = 0
+        self._inbox_count = 0
+        self._last_notice = ""
+        try:
+            self._top_padding_lines = max(0, min(3, int(os.environ.get("SWEET_INPUT_TOP_PADDING", "1") or "1")))
+        except Exception:
+            self._top_padding_lines = 1
+
+    def setup(self) -> bool:
+        if str(os.environ.get("SWEET_PROMPT_TOOLKIT", "")).strip().lower() in ("0", "false", "off", "no"):
+            return False
+        if not (sys.stdin.isatty() and sys.stdout.isatty()):
+            return False
+        try:
+            from prompt_toolkit import PromptSession
+            from prompt_toolkit.patch_stdout import patch_stdout
+            from prompt_toolkit.styles import Style
+        except Exception:
+            return False
+
+        self._session = PromptSession(
+            message=self._prompt_message,
+            bottom_toolbar=self._bottom_toolbar,
+            style=Style.from_dict({
+                "prompt": "bold ansiyellow",
+                "bottom-toolbar": "ansibrightblack",
+            }),
+        )
+        self._patched_ctx = patch_stdout(raw=True)
+        self._patched_ctx.__enter__()
+        self._active = True
+        self._reader_thread = threading.Thread(target=self._reader_loop, daemon=True, name="prompt-input-reader")
+        self._reader_thread.start()
+        self._refresh_thread = threading.Thread(target=self._refresh_loop, daemon=True, name="prompt-input-refresh")
+        self._refresh_thread.start()
+        return True
+
+    def teardown(self):
+        self._active = False
+        try:
+            if self._session is not None:
+                app = getattr(self._session, "app", None)
+                if app is not None:
+                    app.exit(exception=EOFError)
+        except Exception:
+            pass
+        try:
+            if self._patched_ctx is not None:
+                self._patched_ctx.__exit__(None, None, None)
+        except Exception:
+            pass
+
+    def pause(self):
+        self._paused.set()
+        try:
+            if self._session is not None:
+                app = getattr(self._session, "app", None)
+                if app is not None:
+                    app.exit(exception=EOFError)
+        except Exception:
+            pass
+        # Wait until the background prompt has really yielded stdin before a
+        # raw-mode picker tries to read arrow keys. A fixed short sleep was
+        # racy: /threads could open while prompt_toolkit still owned stdin,
+        # so ↑/↓ were swallowed by the hidden prompt. /msg only worked
+        # accidentally when timing was different.
+        deadline = time.time() + 1.0
+        while self._prompt_active.is_set() and time.time() < deadline:
+            time.sleep(0.02)
+
+    def resume(self):
+        self._paused.clear()
+
+    def set_working(self, working: bool):
+        self._working = bool(working)
+        self._work_start = time.time() if working else None
+        try:
+            if self._session is not None:
+                app = getattr(self._session, "app", None)
+                if app is not None:
+                    app.invalidate()
+        except Exception:
+            pass
+
+    def notify(self, text: str = "", queued_delta: int = 0, inbox_delta: int = 0):
+        """Update toolbar-only status from background input handling.
+
+        Avoid console.print() from the prompt thread while Rich Live is active;
+        that can land inside a panel. The toolbar is owned by prompt_toolkit and
+        can be safely invalidated.
+
+        IMPORTANT: when called from the reader thread during a working turn,
+        we skip app.invalidate() to avoid racing with Rich Live rendering.
+        The _refresh_loop (120ms cycle) will pick up the state change and
+        redraw the toolbar on its next tick.
+        """
+        if queued_delta:
+            self._queued_count = max(0, self._queued_count + int(queued_delta))
+        if inbox_delta:
+            self._inbox_count = max(0, self._inbox_count + int(inbox_delta))
+        self._last_notice = text or ""
+        # Suppress toolbar invalidations during Rich Live rendering — the
+        # refresh loop will pick up state changes on its next cycle.
+        if self._working:
+            return
+        try:
+            if self._session is not None:
+                app = getattr(self._session, "app", None)
+                if app is not None:
+                    app.invalidate()
+        except Exception:
+            pass
+
+    def _bottom_toolbar(self):
+        queue_s = f"{self._queued_count} queued · " if self._queued_count else ""
+        inbox_s = f"{self._inbox_count} inbox · " if self._inbox_count else ""
+        notice_s = f" · {self._last_notice}" if self._last_notice else ""
+        if self._working and self._work_start:
+            elapsed = int(time.time() - self._work_start)
+            return f"{inbox_s}{queue_s}working {elapsed}s · type to queue next prompt · /alert <msg> to notify{notice_s}"
+        return f"{inbox_s}{queue_s}Enter to send · /help for commands{notice_s}"
+
+    def _prompt_message(self):
+        # Keep a small gap between the most recent Rich output panel and the
+        # always-on input line. Without this, the prompt feels glued to the
+        # previous tile in Cursor/VSCode terminals.
+        spacer = "\n" * int(getattr(self, "_top_padding_lines", 1) or 0)
+        return [("", spacer), ("class:prompt", "› ")]
+
+    def _reader_loop(self):
+        while self._active:
+            if self._paused.is_set():
+                time.sleep(0.05)
+                continue
+            try:
+                self._prompt_active.set()
+                line = self._session.prompt()
+            except (EOFError, KeyboardInterrupt):
+                if self._paused.is_set():
+                    continue
+                # Let the main loop's existing Ctrl-C handling run.
+                try:
+                    import signal as _sig
+                    os.kill(os.getpid(), _sig.SIGINT)
+                except Exception:
+                    pass
+                continue
+            except Exception:
+                time.sleep(0.1)
+                continue
+            finally:
+                self._prompt_active.clear()
+
+            if line is None:
+                continue
+            if self._working and self._on_working_input and line.strip():
+                try:
+                    self._on_working_input(line.strip())
+                except Exception:
+                    # _on_working_input queues the line itself; don't double-queue
+                    pass
+            else:
+                self._q.put(line)
+
+    def _refresh_loop(self):
+        """Keep the always-on prompt anchored during fast output.
+
+        prompt_toolkit redraws naturally on keypresses. If the user hasn't typed
+        anything and Rich output is streaming quickly, the prompt may not get an
+        input-driven repaint and can appear below the visible window until the
+        next redraw. Invalidating while the prompt is active keeps it pinned.
+        """
+        try:
+            interval = max(0.05, min(1.0, float(os.environ.get("SWEET_PROMPT_REFRESH_INTERVAL", "0.12") or "0.12")))
+        except Exception:
+            interval = 0.12
+        while self._active:
+            try:
+                # During agent turns, Rich Live is rendering and we skip
+                # invalidations to avoid ANSI-sequence collisions. The prompt
+                # is preserved via patch_stdout and will be refreshed on the
+                # first idle cycle after the turn ends.
+                if (self._prompt_active.is_set() and not self._paused.is_set()
+                        and self._session is not None and not self._working):
+                    app = getattr(self._session, "app", None)
+                    if app is not None:
+                        app.invalidate()
+            except Exception:
+                pass
+            time.sleep(interval)
+
+
 class CLIAgent:
     def __init__(
         self, 
@@ -308,6 +959,22 @@ class CLIAgent:
             )
         except Exception:
             pass
+        # Messaging channel: stable id per host so the web app sees one CLI agent.
+        try:
+            import socket as _socket
+            host = _socket.gethostname().split(".")[0]
+        except Exception:
+            host = "host"
+        self.agent_channel_id: str = f"cli-{host}"
+        if billing_client:
+            try:
+                self.tool_registry.bind_messaging(
+                    billing_client,
+                    self.agent_channel_id,
+                    get_variant=lambda: getattr(self.client, "model_variant", "pro"),
+                )
+            except Exception:
+                pass
         # Track directly-created Live tiles so Ctrl+C cleanup can delete any
         # in-flight "Preparing ..." panels even if they haven't been wired into
         # per-call maps yet.
@@ -386,6 +1053,11 @@ FIRST PRINCIPLES:
    Given a goal: Assess → Research → Decide → Act → Verify → Document → Report.
    If a competent operator would figure it out in ~30 minutes, you figure it out and proceed.
    Only stop for: missing real credentials/access you cannot obtain, irreversible high-impact destruction (real users/revenue/legal liability), or exhaustion of multiple serious approaches.
+   Answer your own questions first. When you catch yourself thinking "Should I ask the user?", run this ladder:
+   (a) Can I infer a sensible default from the repo, current task, product goals, or prior durable state?
+   (b) Can I safely choose the reversible/conservative option and document it?
+   (c) Can I make progress on a useful adjacent task while deferring the decision?
+   Ask the user only when the answer changes irreversible/high-stakes behavior, requires missing credentials/access, or is a genuine preference that cannot be inferred. Otherwise decide, act, verify, and report the assumption.
 
 2. READ BEFORE WRITE, ALWAYS
    Never modify any artifact (code, doc, spreadsheet, dashboard, copy, contract draft, config) you have not just read. After every modification, re-read before the next one. Line numbers, state, and context go stale instantly.
@@ -436,6 +1108,13 @@ WHEN TO ESCALATE (only after exhausting your own judgment):
 - Public statements on behalf of the company in a crisis.
 - Anything where being wrong is catastrophic AND unrecoverable.
 
+USER INPUT DISCIPLINE:
+- Minimize questions. The default mode is not "ask then act"; it is "decide, act, verify, and mention the assumption."
+- Batch non-urgent questions into one concise checkpoint instead of interrupting repeatedly.
+- Prefer reversible, low-risk defaults over waiting. If the choice can be changed later, choose now.
+- If you need information, first look in files, logs, session.json, todos, agent_journal, git history, docs, web search, or existing threads before asking the user.
+- Never ask the user to do work you can do with tools. Ask only for authority, secrets/credentials, true preferences, or unrecoverable decisions.
+
 TASK STRUCTURE:
 - 1-step tasks: execute directly.
 - Multi-step or 30+ minute tasks: make a compact plan with subtasks/owners/estimates, then execute.
@@ -458,9 +1137,15 @@ You orchestrate; subagents execute. Your job at the top level is to define outco
 - Prefer async subagents (`run_subagent_async`) for long-running parallel work; poll with `poll_subagent`, aggregate, and verify outputs before integrating.
 - Subagents may spawn their own subagents when decomposition improves throughput, but avoid unbounded recursion.
 - You remain accountable for integration: verify each subagent's output, resolve conflicts, and ship one coherent final result.
+- ACTIVE SUBAGENTS ARE ACTIVE WORK. If any subagent/job is still queued or running, you are not done. Do not end the turn with only a passive status update unless the user explicitly asked for status only. Either:
+    (a) keep doing useful parallel work while it runs,
+    (b) wait with a bare `sleep N` and then poll again,
+    (c) poll/integrate if it is ready, or
+    (d) explain a real blocker and ask for a decision.
+  A status update is useful, but it is not a stopping condition.
 
 COMPLETION GATE:
-You are done only when every requirement is met, every todo is closed, output is verified, and you can say "this is ready." If blocked, explain what's needed and provide alternatives. Invalid reasons to stop: uncertainty, complexity, time, or unfamiliarity — those are reasons to think harder, decompose further, or dispatch a specialist subagent.
+You are done only when every requirement is met, every todo is closed, every queued/running subagent or background job has been integrated/cancelled/deferred with a reason, output is verified, and you can say "this is ready." If blocked, explain what's needed and provide alternatives. Invalid reasons to stop: uncertainty, complexity, time, unfamiliarity, compaction, or "still waiting on a running subagent" — those are reasons to think harder, decompose further, do useful parallel work, sleep-and-poll, or dispatch a specialist subagent.
 
 HARNESS TOOL DISCIPLINE:
 These tools are your durable memory across turns and compactions. Treat them as critical infrastructure.
@@ -474,8 +1159,34 @@ These tools are your durable memory across turns and compactions. Treat them as 
 - Subagents: When you dispatch async subagents via run_subagent_async, you MUST poll them (poll_subagent) and integrate their results. Never spawn a subagent and forget it. If interrupted, jobs flip to 'interrupted' on restore — re-dispatch if the work is still needed.
 
 - Compaction awareness: Your conversation history may be compacted at any time. Old messages are replaced by a "Conversation summary (auto-compacted)" user message. Do NOT rely on chat history as durable storage. Critical state lives in: todos, journal entries, session.json, and git commits. After any compaction resume, re-read relevant files and your todo list.
+- Compaction is not completion. If you notice context was compacted, continue the task from durable state (todos, journal, session.json, files, subagent/job state). Never stop merely because compaction happened. If there was active work before compaction, resume that work immediately.
 
 - run_command: Default timeout is 30 seconds. For long builds/tests, set an explicit timeout. Server-like commands (npm start, http.server, etc.) auto-detach after capturing startup. Always verify command output before acting on it.
+
+MESSAGING THREADS (ASYNC USER COMMUNICATION):
+The user communicates with you through two distinct channels:
+1. Direct CLI prompts: these are immediate instructions in the main terminal conversation.
+2. Message threads / inbox: durable asynchronous conversations, equivalent to the web app's thread UI.
+
+Treat threads as an inbox, not as interruptions. The user can send thread messages while you work. The harness may add a lightweight runtime notification such as "the user sent new inbox events." That notification is NOT the message content and is NOT automatically a command to stop; it is a signal that unread messages exist. Use judgment:
+- If you are in the middle of a delicate tool operation, finish the safe checkpoint first.
+- If the notification is urgent, user-facing, or likely to change priorities, call check_messages soon.
+- If you are between tasks, before sleeping, after waking, or about to make an irreversible/expensive decision, call check_messages.
+- Do not infer message contents from the notification. To read the user's actual words, call check_messages or read_thread.
+
+Messaging tools:
+
+- check_messages: Fetch new unread user messages across all threads. Call it (a) at session start, (b) every time you wake from a sleep, and (c) between tasks. It marks messages read — always act on what it returns.
+- list_threads / read_thread: Browse threads and read full context before replying. Each thread is an independent conversation topic; keep replies in the thread they belong to. Prefer unread/high-priority threads first.
+- reply_to_thread: Your replies here are what the user actually sees in their chat. Reply promptly when a user message arrives, and post progress updates for long-running work. Keep replies concise and conversational — no tool logs or filler.
+- create_thread: Open a new thread to report proactive work, weekly digests, or escalations that don't fit an existing thread.
+
+IDLE / SLEEP PROTOCOL:
+When you have genuinely nothing to do (all todos closed, inbox empty, no anomalies), idle with `run_command` using a bare sleep, e.g. `sleep 300`. Rules:
+- Use a bare `sleep N` command (nothing else chained) — the harness makes it interruptible. Messages work like email: they wait in your inbox until you choose to check them. Runtime notifications may tell you messages exist, but you decide when to read them.
+- Pick N based on context: 60-300s when expecting replies or mid-conversation, 600-1800s during quiet periods. Never exceed 3600.
+- IMMEDIATELY after every sleep returns, call check_messages.
+- Never end your turn just because there's no input — either work, or sleep. The loop is: work -> check_messages -> reply -> work or sleep -> repeat, forever.
 
 24/7 OPERATING RHYTHM:
 You are designed for continuous autonomous operation. "No user input" does not mean "nothing to do."
@@ -486,6 +1197,8 @@ You are designed for continuous autonomous operation. "No user input" does not m
     (c) Are there any early-warning signals in logs, metrics, or revenue?
   Then choose and act. "Waiting" is only valid when all discoverable high-value work is done, status is reported, and you are genuinely blocked on a human decision.
 
+- STATUS-ONLY RESPONSES: A progress summary is not a final answer when work remains. After giving a status update, continue with the next concrete action in the same turn: poll a running subagent, wait with a bare sleep and poll again, prepare/integrate completed artifacts, run validation, update todos, or write a checkpoint. Only return control to the user if the user asked only for status, all active work is complete, or a human decision is genuinely required.
+
 - DAILY CHECK: At session start or when idle, check: system health (uptime, error rates, container status, disk/memory), business metrics (revenue, MRR trend, conversion, churn), costs (API spend vs budget), and security (unusual access, dependency vulns). Report anomalies. Fix the highest-severity issues without waiting.
 
 - WEEKLY REVIEW: Produce a compact digest: progress against OKRs, competitive moves, tech debt accrued, backlog health, and top 3 priorities for next week.
@@ -494,8 +1207,69 @@ You are designed for continuous autonomous operation. "No user input" does not m
 
 - RESOURCE BUDGETING: API calls cost money. Estimate the value of expensive operations before starting. Don't spend $50 investigating a $5 problem. For multi-hour runs, checkpoint intermediate results. Prefer high-leverage work over busywork.
         """
-        # Resolve date placeholders
-        self.system_prompt = SWEET_CLI_PROMPT.format(current_date=current_date, current_year=current_year)
+        # Condensed system prompt for local/small models (much faster prefill)
+        SWEET_CLI_PROMPT_LOCAL = """
+Sweet! CLI - Autonomous Co-CEO (Local)
+
+DATE: {current_date}
+
+You are the user's autonomous co-CEO with full authority across engineering, product, marketing, sales, operations, finance, and strategy. Default to action, never permission.
+
+CORE RULES:
+1. BIAS TO ACTION: Assess -> Decide -> Act -> Verify -> Report. Figure things out; don't ask for approval.
+2. READ BEFORE WRITE: Always read files before modifying them.
+3. VERIFY EVERYTHING: Confirm changes via tests, diffs, and re-reading.
+4. PROTECT LIVE SYSTEMS: Be conservative with production, billing, DNS, contracts, and money.
+5. KEEP GOING: Errors are information. Try multiple approaches. "Hard" is not a reason to stop.
+6. COMMUNICATE WITH INTENT: State what/why before acting. Report progress at milestones.
+7. EXECUTE DIRECTLY: Run commands, edits, research yourself. Don't hand the user a checklist.
+8. RESPECT DIRECTORY BOUNDARIES: Stay within the session directory unless user says otherwise.
+9. USE GIT AS SAFETY NET: Commit verified milestones. Never force-push or rewrite shared history.
+
+USER INPUT DISCIPLINE: Answer your own questions first. Infer sensible defaults from repo/task/state, choose reversible conservative options, and document assumptions. Ask the user only for missing credentials/access, true preferences that cannot be inferred, or irreversible/high-stakes decisions. Batch non-urgent questions; never ask the user to do work you can do with tools.
+
+TOOLS: Use manage_todos for tasks, agent_journal/ for milestone records, session.json for state persistence. Subagents dispatched via run_subagent_async must be polled and integrated.
+
+MESSAGING: check_messages at session start and between tasks. Reply to threads promptly. Keep replies concise.
+
+IDLE: When nothing to do, sleep N seconds (60-1800) then check messages. The loop: work -> check_messages -> reply -> work/sleep.
+
+SELF-DIRECTION: When idle, assess highest-impact work, check system health, and act. Report anomalies. Batch non-urgent questions.
+"""
+        # Resolve date placeholders - use condensed prompt for local provider
+        if provider == "local":
+            self.system_prompt = SWEET_CLI_PROMPT_LOCAL.format(current_date=current_date, current_year=current_year)
+        else:
+            self.system_prompt = SWEET_CLI_PROMPT.format(current_date=current_date, current_year=current_year)
+        # Prefix-cache warmup flag for local provider (see _warmup_prefix_cache)
+        self._prefix_cache_warmed = (provider != "local")
+
+    def _warmup_prefix_cache(self) -> None:
+        """Send a baseline request so DFlash's prefix cache has a second snapshot
+        (system+tools only, no user message). The stable-prefix algorithm then
+        isolates the system+tools common prefix shared across all turns.
+        Only used with --provider local after the dflash-mlx v0.1.8+ upgrade."""
+        if self._prefix_cache_warmed:
+            return
+        try:
+            # max_tokens=10 bypasses the fast-path threshold so this creates a
+            # DFlash-level prefix cache snapshot instead of going pure-AR.
+            # Send the same structure as a real turn: system + dummy user message.
+            # This way the chat template produces identical tokenization for the
+            # system+tools prefix, and DFlash's stable-prefix algorithm isolates it.
+            resp = self.client.chat(
+                messages=[
+                    {"role": "system", "content": self.system_prompt},
+                    {"role": "user", "content": "."},
+                ],
+                tools=self.tool_registry.get_tool_definitions(compact=True),
+                stream=False,
+                max_tokens=10,
+                model="mlx-community/Qwen3.5-4B-MLX-4bit",
+            )
+        except Exception:
+            pass
+        self._prefix_cache_warmed = True
 
     # -- Subagent persistence (snapshot-and-retry) ------------------------------
     # Caps to keep session files from growing unbounded.
@@ -736,29 +1510,25 @@ You are designed for continuous autonomous operation. "No user input" does not m
                 pass
 
     # ═══════════════════════════════════════════════════════════════════
-    #  COMPACTION SUBSYSTEM
+    #  COMPACTION SUBSYSTEM — INTENTIONALLY SIMPLE. DO NOT ADD MODEL CALLS.
     #
-    #  Architecture (single-model, resume_prompt mode):
-    #    1. _maybe_summarize_conversation(progress_callback=None) — entry point,
-    #       checks token budget, delegates to _compact_conversation.
-    #    2. _compact_conversation — sends full history to the model in one call,
-    #       returns a dense compressed text.
-    #    3. _build_compaction_resume_message — wraps compressed text in a minimal
-    #       directive header (runtime-inserted, continue, don't summarize).
-    #    4. Conversation replaced with [system_prompt, user(resume_wrapper)].
+    #  Design decision (per user, June 2026): compaction is an instant LRU
+    #  slice that keeps the most recent 25% of the conversation array.
+    #  It is short-term memory only — no model-based summarization, no
+    #  progress tile, no snapshot/journal writes. Worst case the agent
+    #  re-reads the repo for older context, like a human would.
     #
-    #  Progress tile (for Live contexts):
-    #    _maybe_summarize_with_tile(thinking_live) — shows a Rich Panel progress
-    #    bar via _make_compaction_panel; delegates to _maybe_summarize_conversation
-    #    with a progress_callback that updates the Live tile.
+    #  Architecture:
+    #    1. _maybe_summarize_conversation — checks token budget, slices via
+    #       _compact_conversation, sets _pending_compaction_notice (inline).
+    #    2. _compact_conversation — history = history[-max(10, len//4):],
+    #       boundary-trimmed via _find_valid_compaction_start, then a runtime-
+    #       injected "context compacted, continue working" user message.
+    #       The system prompt is re-inserted at the next turn automatically.
+    #    3. _maybe_summarize_with_tile — same check, NO tile (it's instant);
+    #       kept for call-site compatibility.
     #
-    #  Call sites:
-    #    ~3354, ~6689 → _maybe_summarize_with_tile (Live context available)
-    #    ~6359        → _maybe_summarize_conversation (subagent path, no Live)
-    #
-    #  Stall guard: _is_post_compaction_turn + _post_compaction_retried flag
-    #  force a retry if the model responds with text-only after compaction.
-    # ═══════════════════════════════════════════════════════════════════
+    #  No stall guard needed — compaction happens silently before the API call;\n    #  the model never sees a compaction notice, so it never stalls from one.
 
     def _write_compaction_journal_entry(self, *, resume_text: str, before_tokens: Optional[int], after_tokens: Optional[int], pre_session_file: Optional[str], post_session_file: Optional[str]) -> Optional[str]:
         """
@@ -787,24 +1557,7 @@ You are designed for continuous autonomous operation. "No user input" does not m
             lines.append("")
             lines.append("## Resume context (auto-compacted)")
             lines.append("")
-            # If resume_text is a JSON array, format it as readable conversation
-            try:
-                import json as _j2
-                parsed = _j2.loads(resume_text)
-                if isinstance(parsed, list):
-                    for entry in parsed:
-                        role = entry.get("role", "?")
-                        content = (entry.get("content") or "")[:200]
-                        tools = ""
-                        if entry.get("tool_calls"):
-                            tools = " [tools: " + ", ".join(
-                                (tc.get("function", {}).get("name", "?") for tc in entry["tool_calls"])
-                            ) + "]"
-                        lines.append(f"[{role}]{tools} {content}")
-                else:
-                    lines.append((resume_text or "").strip()[:2000])
-            except Exception:
-                lines.append((resume_text or "").strip()[:2000])
+            lines.append((resume_text or "").strip())
             lines.append("")
             with open(path, "w") as f:
                 f.write("\n".join(lines))
@@ -991,95 +1744,80 @@ You are designed for continuous autonomous operation. "No user input" does not m
             + (resume_text or "")
         )
 
-    def _is_post_compaction_turn(self) -> bool:
-        """Return True if the most recent user message is a compaction resume injection."""
-        try:
-            for m in reversed(self.conversation_history or []):
-                if m.get("role") == "user":
-                    meta = m.get("meta") or {}
-                    if isinstance(meta, dict) and meta.get("kind") == "compact_resume":
-                        return True
-                    # If we hit a different user message, it's not a post-compaction turn.
-                    return False
-            return False
-        except Exception:
-            return False
+    def _find_valid_compaction_start(self, messages: List[Dict[str, Any]]) -> int:
+        """Index of the first message safe to start a compacted window on.
 
-    def _compact_conversation(self) -> str:
-        """Ask the model to compress the full conversation, returning summarized messages
-        that preserve the conversation skeleton with same roles + tool calls, just shorter content."""
-        import json as json_mod
-        
-        # Serialize the conversation as a structured array
-        messages_summary: List[Dict[str, Any]] = []
-        for m in self.conversation_history:
-            entry = {"role": m.get("role", "assistant")}
-            content = m.get("content", "") or m.get("reasoning_content", "") or ""
-            # Bound individual messages
-            if isinstance(content, str) and len(content) > 6000:
-                content = content[:3000] + "\n…[truncated]…\n" + content[-2000:]
-            entry["content"] = content
-            if m.get("tool_calls"):
-                entry["tool_calls"] = [
-                    {
-                        "id": tc.get("id", ""),
-                        "function": {
-                            "name": (tc.get("function") or {}).get("name", ""),
-                            "arguments": ((tc.get("function") or {}).get("arguments", "") or "")[:200],
-                        }
-                    }
-                    for tc in m["tool_calls"]
-                ]
-            if m.get("name"):
-                entry["name"] = m["name"]
-            if m.get("tool_call_id"):
-                entry["tool_call_id"] = m["tool_call_id"]
-            messages_summary.append(entry)
+        Orphan tool results and assistant turns whose tool responses were
+        sliced off are skipped so the API never receives a broken head."""
+        i = 0
+        n = len(messages)
+        while i < n:
+            msg = messages[i]
+            role = msg.get("role")
 
-        system_instr = (
-            "You are compressing a conversation history for an autonomous coding agent. "
-            "Below is an array of messages. Return a JSON array with the SAME structure "
-            "and SAME number of messages — but compress each message's content while preserving:\n\n"
-            "- The user's original goal and exact wording (keep user messages verbatim)\n"
-            "- Every concrete detail: file paths, commands, function names, line numbers, error messages\n"
-            "- What has been done, what worked, what failed\n"
-            "- The agent's current plan and exact next action\n\n"
-            "Compress by removing: repetition, verbose explanations, conversational filler. "
-            "Keep tool_calls, tool_call_id, and name fields untouched.\n\n"
-            "Output ONLY a valid JSON array. No other text. The array must have exactly the same "
-            "number of entries as the input."
-        )
+            if role in ("system", "user"):
+                return i
 
-        try:
-            resp = self.client.chat(
-                messages=[
-                    {"role": "system", "content": system_instr},
-                    {"role": "user", "content": json_mod.dumps(messages_summary)},
-                ],
-                temperature=0.1,
-                max_tokens=getattr(self.config, "compaction_summary_max_tokens", 8000) or 8000,
-                response_format={"type": "json_object"},
-            )
-            if resp and hasattr(resp, "choices") and resp.choices:
-                result = (resp.choices[0].message.content or "").strip()
-                # Try to parse as JSON; if it wraps the array in an object, extract it
-                try:
-                    parsed = json_mod.loads(result)
-                    if isinstance(parsed, dict):
-                        for v in parsed.values():
-                            if isinstance(v, list):
-                                parsed = v
-                                break
-                    if isinstance(parsed, list):
-                        # Convert back to conversation format preserving the skeleton
-                        return json_mod.dumps(parsed)
-                except Exception:
-                    pass
-                # Fallback: return raw text
-                return result
-        except Exception:
-            pass
-        return ""
+            if role == "assistant":
+                tool_calls = msg.get("tool_calls") or []
+                if not tool_calls:
+                    return i
+
+                expected_ids = {
+                    tc.get("id")
+                    for tc in tool_calls
+                    if isinstance(tc, dict) and isinstance(tc.get("id"), str)
+                }
+                j = i + 1
+                while j < n and messages[j].get("role") == "tool":
+                    j += 1
+
+                if not expected_ids:
+                    return i
+
+                found_ids = {
+                    messages[k].get("tool_call_id")
+                    for k in range(i + 1, j)
+                    if isinstance(messages[k].get("tool_call_id"), str)
+                }
+                if expected_ids <= found_ids:
+                    return i
+
+                # Incomplete tool block at the slice head — drop it and retry.
+                i = j
+                continue
+
+            if role == "tool":
+                i += 1
+                continue
+
+            return i
+
+        # Fallback: last user message, else the final message.
+        for k in range(n - 1, -1, -1):
+            if messages[k].get("role") == "user":
+                return k
+        return max(0, n - 1)
+
+    def _compact_conversation(self, drop_ratio: float = 0.2) -> str:
+        """Drop the oldest ~drop_ratio of the conversation. Small, frequent slices
+        (default 20%) so the model never loses more than a few turns at once.
+        Called in a loop from _maybe_summarize_conversation until under budget.
+
+        After slicing, trims the head forward past orphan tool results and
+        incomplete assistant+tool blocks so the window always starts clean.
+
+        No resume message is injected — compaction happens before the API call
+        so the model simply sees less history, unaware compaction occurred."""
+        keep = max(20, int(len(self.conversation_history) * (1.0 - drop_ratio)))
+        sliced = self.conversation_history[-keep:]
+        start = self._find_valid_compaction_start(sliced)
+        # Don't let boundary-trim collapse a large window down to 1-2 messages.
+        min_keep = min(8, len(sliced))
+        if len(sliced) - start < min_keep:
+            start = max(0, len(sliced) - min_keep)
+        self.conversation_history = sliced[start:]
+        return "ok"
 
     def _make_compaction_panel(self, pct: float, label: str = "") -> "Panel":
         """Return a Panel with a text-based progress bar for compaction."""
@@ -1100,32 +1838,14 @@ You are designed for continuous autonomous operation. "No user input" does not m
         )
 
     def _maybe_summarize_with_tile(self, thinking_live=None) -> None:
-        """Check and run compaction, showing a real-progress tile via the Live context."""
-        # Quick pre-check: do we even need compaction?
+        """Check and run compaction. No tile — the LRU slice is instant."""
         try:
             tokens = self._estimate_messages_tokens(self.conversation_history)
         except Exception:
             tokens = None
         if isinstance(tokens, int) and tokens <= self.max_context_tokens:
             return
-
-        # Progress callback that updates the Live tile
-        def _update_tile(pct: float, label: str = "") -> None:
-            if thinking_live is not None:
-                try:
-                    thinking_live.update(self._make_compaction_panel(pct, label))
-                    sys.stdout.flush()
-                except Exception:
-                    pass
-
-        # Show initial tile
-        _update_tile(0, "Checking context...")
-
-        self._maybe_summarize_conversation(progress_callback=_update_tile)
-
-        # Show completion
-        _update_tile(100, "Compacted")
-        time.sleep(0.3)
+        self._maybe_summarize_conversation()
 
 
     def _maybe_summarize_conversation(self, progress_callback=None) -> None:
@@ -1146,106 +1866,37 @@ You are designed for continuous autonomous operation. "No user input" does not m
         if tokens is None or (isinstance(tokens, int) and tokens <= self.max_context_tokens):
             return
 
-        # Persist pre-compaction snapshot for training
-        self._save_pre_compaction_snapshot(tokens, reason="over_budget")
-
-        # Single model call: compress the full conversation
-        if progress_callback:
-            try: progress_callback(15, "Compressing with model...")
-            except Exception: pass
-        resume_text = self._compact_conversation()
-        if not resume_text:
-            # Fallback: last 40 messages as raw text
-            try:
-                recent = self.conversation_history[-40:] if len(self.conversation_history) > 40 else list(self.conversation_history)
-                fallback_lines = []
-                for m in recent:
-                    role = m.get("role", "assistant")
-                    content = m.get("content", "") or m.get("reasoning_content", "")
-                    if m.get("tool_calls"):
-                        calls = [((tc.get("function") or {}).get("name", "")) for tc in (m.get("tool_calls") or [])]
-                        content = (content + "\n" if content else "") + "[Tools: " + ", ".join(calls) + "]"
-                    if isinstance(content, str) and len(content) > 2000:
-                        content = content[:1000] + "\n…\n" + content[-600:]
-                    fallback_lines.append(f"[{role}] {content}")
-                resume_text = "FALLBACK (model unavailable)\n\n" + "\n".join(fallback_lines)
-            except Exception:
-                resume_text = "FALLBACK (model unavailable). Please restate what you want next."
-
-        if progress_callback:
-            try: progress_callback(70, "Writing snapshots...")
-            except Exception: pass
-
-        # Persist pre-compaction snapshot file
-        pre_session = self._write_session_snapshot_file(reason="pre_compaction", token_estimate=before_tokens, extra={
-            "before_messages": before_messages,
-        })
-
-        self.parent_session_file = pre_session or self.parent_session_file
+        # Small-frequent LRU compaction: drop ~20% per pass, looping until
+        # under budget. This keeps the model's short-term memory intact across
+        # most turns — only the oldest slice is dropped each cycle.
         self.window_index += 1
         self.window_start_time = time.time()
-
-        # Reconstruct conversation from compressed message array (preserving skeleton)
-        import json as _json
-        try:
-            compressed_msgs = _json.loads(resume_text)
-            if isinstance(compressed_msgs, list) and len(compressed_msgs) > 0:
-                # Reconstruct: keep system prompt + compressed messages
-                reconstructed = [{"role": "system", "content": self.system_prompt}]
-                for cm in compressed_msgs:
-                    if not isinstance(cm, dict):
-                        continue
-                    msg = {"role": cm.get("role", "assistant")}
-                    if cm.get("content"):
-                        msg["content"] = cm["content"]
-                    if cm.get("tool_calls"):
-                        msg["tool_calls"] = cm["tool_calls"]
-                    if cm.get("tool_call_id"):
-                        msg["tool_call_id"] = cm["tool_call_id"]
-                    if cm.get("name"):
-                        msg["name"] = cm["name"]
-                    reconstructed.append(msg)
-                self.conversation_history = reconstructed
-            else:
-                raise ValueError("empty or invalid compressed array")
-        except Exception:
-            # Fallback: wrap as resume text
-            wrapped = self._build_compaction_resume_message(resume_text) if resume_text else "FALLBACK: compaction failed. Please restate your goal."
-            self.conversation_history = [
-                {"role": "system", "content": self.system_prompt},
-                {"role": "user", "content": wrapped, "meta": {"auto_injected": True, "kind": "compact_resume"}},
-            ]
-
-        after_tokens = self._estimate_messages_tokens(self.conversation_history)
-        post_session = self._write_session_snapshot_file(reason="post_compaction", token_estimate=after_tokens, extra={
-            "after_messages": len(self.conversation_history),
-        })
-        self.parent_session_file = post_session or self.parent_session_file
-        journal_path = self._write_compaction_journal_entry(
-            resume_text=resume_text,
-            before_tokens=before_tokens,
-            after_tokens=after_tokens,
-            pre_session_file=pre_session,
-            post_session_file=post_session,
-        )
-
-        if journal_path:
+        passes = 0
+        before_messages_count = len(self.conversation_history)
+        while True:
+            passes += 1
+            self._compact_conversation(drop_ratio=0.2)
             try:
-                self.conversation_history[1]["content"] += f"\n\n(Agent journal entry saved: {journal_path})"
+                after_tokens = self._estimate_messages_tokens(self.conversation_history)
             except Exception:
-                pass
+                after_tokens = None
+            if after_tokens is not None and after_tokens <= self.max_context_tokens:
+                break
+            # Safety: stop if we've dropped below 20 messages — further
+            # slicing would destroy the conversation skeleton.
+            if len(self.conversation_history) < 20:
+                break
+            # Safety: don't loop more than 10 times (hard stop at ~90% drop)
+            if passes >= 10:
+                break
 
-        if progress_callback:
-            try: progress_callback(95, "Finalizing...")
-            except Exception: pass
-
-        # User-visible notice
+        # User-visible inline notice (no tile)
         try:
             self._pending_compaction_notice = {
                 "type": "compact",
                 "before_tokens": before_tokens,
                 "after_tokens": after_tokens,
-                "before_messages": before_messages,
+                "before_messages": before_messages_count,
                 "after_messages": len(self.conversation_history),
             }
         except Exception:
@@ -1301,8 +1952,9 @@ You are designed for continuous autonomous operation. "No user input" does not m
             "[cyan]•[/cyan] [bold white]Ctrl+C[/bold white]  interrupt (twice to exit)\n"
             "\n"
             "[dim]Sessions[/dim]\n"
-            "[cyan]•[/cyan] [bold white]sweet resume[/bold white]  resume last session\n"
-            "[cyan]•[/cyan] [bold white]sweet start --session {sessionid}[/bold white]  resume a specific session\n"
+            "[cyan]•[/cyan] [bold white]sweet resume[/bold white]  pick a session from a ↑/↓ menu (newest preselected — just press Enter)\n"
+            "[cyan]•[/cyan] [bold white]sweet resume --resume-last[/bold white]  skip the menu, resume the latest\n"
+            "[cyan]•[/cyan] [bold white]/resume[/bold white]  pick and resume a saved session without leaving the shell ([dim]/resume last[/dim])\n"
             "\n"
             "[dim]Autopilot[/dim]\n"
             "[cyan]•[/cyan] [bold white]/workfor 45m[/bold white]  autopilot for 45m (starts after your next prompt)\n"
@@ -1313,6 +1965,19 @@ You are designed for continuous autonomous operation. "No user input" does not m
             "[dim]Background jobs[/dim]\n"
             "[cyan]•[/cyan] [bold white]/jobs[/bold white]  list background jobs\n"
             "[cyan]•[/cyan] [bold white]/kill <job_id>[/bold white]  stop a background job\n"
+            "\n"
+            "[dim]Input bar (always on)[/dim]\n"
+            "[cyan]•[/cyan] type anytime — even mid-turn. Plain text queues as your next prompt and runs when the turn finishes (it pre-empts the next autopilot step).\n"
+            "[cyan]•[/cyan] [bold white]/queue[/bold white]  view queued prompts ([dim]/queue clear[/dim] to discard)\n"
+            "\n"
+            "[dim]Messaging threads[/dim]\n"
+            "[cyan]•[/cyan] [bold white]/threads[/bold white]  pick a thread from a ↑/↓ menu and read it\n"
+            "[cyan]•[/cyan] [bold white]/read[/bold white]  pick a thread to read ([dim]/read <id>[/dim] to jump directly)\n"
+            "[cyan]•[/cyan] [bold white]/msg[/bold white]  pick a thread, then type your message ([dim]/msg <id> <text>[/dim] to skip the menu)\n"
+            "[cyan]•[/cyan] [bold white]/inbox <text>[/bold white]  send to the agent inbox without picking a thread\n"
+            "[cyan]•[/cyan] [bold white]/newthread <title> | <text>[/bold white]  start a new thread\n"
+            "[cyan]•[/cyan] [bold white]/alert <text>[/bold white]  deliver to inbox + notify the agent\n"
+            "[cyan]•[/cyan] [bold white]/model[/bold white]  show or toggle model variant ([dim]/model flash[/dim], [dim]/model pro[/dim])\n"
             "\n"
             "[dim]Paste helpers (macOS)[/dim]\n"
             "[cyan]•[/cyan] [bold white]/paste[/bold white]  paste clipboard\n"
@@ -1339,6 +2004,959 @@ You are designed for continuous autonomous operation. "No user input" does not m
                 console.print(f"[dim]{info.get('message')}[/dim]")
             return
         console.print("[yellow]⚠️[/yellow] Billing account email unavailable. Try logging in again.")
+
+    # -- Messaging threads (slash command helpers) -------------------------------
+    def _messaging_available(self) -> bool:
+        return bool(self.billing_client)
+
+    def display_threads(self):
+        """List message threads (slash command /threads)."""
+        if not self._messaging_available():
+            console.print("[dim]Messaging requires the billing relay (sign in first).[/dim]")
+            return
+        res = self.billing_client.list_agent_threads()
+        if not res.get("ok"):
+            console.print(f"[red]✗ Failed to list threads:[/red] {escape(str(res.get('error', '')))}")
+            return
+        threads = res.get("threads", [])
+        if not threads:
+            console.print("[dim]No threads yet. Start one with /newthread <title> | <message>[/dim]")
+            return
+        console.print("[bold]Message threads:[/bold]")
+        for t in threads:
+            unread = t.get("unconsumed_count") or 0
+            unread_s = f" [yellow]({unread} unread)[/yellow]" if unread else ""
+            preview = (t.get("last_message") or "").replace("\n", " ")[:80]
+            console.print(f"- [cyan]#{t.get('id')}[/cyan] [bold]{escape(t.get('title') or 'Untitled')}[/bold] [dim]{t.get('status')}[/dim]{unread_s}")
+            if preview:
+                console.print(f"  [dim]{escape(preview)}[/dim]")
+
+    def _fetch_threads(self) -> List[Dict[str, Any]]:
+        """Return the list of threads (newest/most-relevant first), or []."""
+        if not self._messaging_available():
+            return []
+        try:
+            res = self.billing_client.list_agent_threads()
+        except Exception:
+            return []
+        if not res.get("ok"):
+            return []
+        threads = list(res.get("threads", []) or [])
+        def _sort_key(t: Dict[str, Any]):
+            unread = int(t.get("unconsumed_count") or 0)
+            ts = t.get("updated_at") or t.get("last_message_at") or t.get("created_at") or 0
+            try:
+                ts = float(ts)
+            except Exception:
+                ts = 0
+            return (1 if unread else 0, unread, ts)
+        threads.sort(key=_sort_key, reverse=True)
+        return threads
+
+    def _pick_thread(self, title: str = "Select a thread") -> Optional[int]:
+        """Show an inline arrow-key menu of threads. Returns the chosen id, or None."""
+        if not self._messaging_available():
+            console.print("[dim]Messaging requires the billing relay (sign in first).[/dim]")
+            return None
+        threads = self._fetch_threads()
+        if not threads:
+            console.print("[dim]No threads yet. Start one with /newthread <title> | <message>[/dim]")
+            return None
+
+        def _render(t: Dict[str, Any]) -> str:
+            unread = t.get("unconsumed_count") or 0
+            unread_s = f"  ({unread} unread)" if unread else ""
+            preview = (t.get("last_message") or "").replace("\n", " ").strip()
+            preview = (preview[:60] + "…") if len(preview) > 60 else preview
+            status = t.get("status") or "open"
+            age = ""
+            try:
+                ts = t.get("updated_at") or t.get("last_message_at") or t.get("created_at") or 0
+                ts = float(ts)
+                if ts > 10_000_000_000:
+                    ts = ts / 1000.0
+                delta = max(0, int(time.time() - ts))
+                if delta < 3600:
+                    age = f" {max(1, delta // 60)}m"
+                elif delta < 86400:
+                    age = f" {delta // 3600}h"
+                else:
+                    age = f" {delta // 86400}d"
+            except Exception:
+                age = ""
+            base = f"#{t.get('id')}  {t.get('title') or 'Untitled'}  [{status}{age}]{unread_s}"
+            return f"{base}  —  {preview}" if preview else base
+
+        chosen = self._interactive_select(title, threads, render=_render)
+        if not chosen:
+            return None
+        try:
+            return int(chosen.get("id"))
+        except Exception:
+            return None
+
+    def display_thread_messages(self, thread_id: int):
+        """Print all messages in a thread (slash command /read)."""
+        if not self._messaging_available():
+            console.print("[dim]Messaging requires the billing relay (sign in first).[/dim]")
+            return
+        res = self.billing_client.get_agent_messages(thread_id=thread_id)
+        if not res.get("ok"):
+            console.print(f"[red]✗ Failed to read thread:[/red] {escape(str(res.get('error', '')))}")
+            return
+        messages = res.get("messages", [])
+        if not messages:
+            console.print(f"[dim]Thread #{thread_id} has no messages.[/dim]")
+            return
+        console.print(f"[bold]Thread #{thread_id}:[/bold]")
+        for m in messages:
+            role = m.get("role")
+            ts = ""
+            try:
+                ts = datetime.fromtimestamp((m.get("created_at") or 0) / 1000).strftime("%m-%d %H:%M")
+            except Exception:
+                pass
+            label = "[yellow]You[/yellow]" if role == "user" else "[cyan]Agent[/cyan]"
+            console.print(f"{label} [dim]{ts}[/dim]")
+            console.print(f"  {escape(str(m.get('content') or ''))}")
+
+    def send_thread_message(self, thread_id: int, content: str):
+        """Post a user message into a thread (slash command /msg)."""
+        if not self._messaging_available():
+            console.print("[dim]Messaging requires the billing relay (sign in first).[/dim]")
+            return False
+        res = self.billing_client.post_agent_message(thread_id, content, role="user")
+        if not res.get("ok"):
+            console.print(f"[red]✗ Failed to send message:[/red] {escape(str(res.get('error', '')))}")
+            return False
+        self._queue_model_inbox_notification(thread_id=thread_id, urgent=False, event="message")
+        if getattr(self, "_turn_in_progress", False):
+            self._notify_inbox_event(f"sent to thread #{thread_id} · model notified")
+        else:
+            console.print(f"[green]✓[/green] Sent to thread #{thread_id}. The agent was notified and can call check_messages when ready.")
+        return True
+
+    def create_message_thread(self, title: str, content: str = ""):
+        """Create a thread, optionally with a first user message (slash command /newthread)."""
+        if not self._messaging_available():
+            console.print("[dim]Messaging requires the billing relay (sign in first).[/dim]")
+            return False
+        res = self.billing_client.create_agent_thread(title, content)
+        if not res.get("ok"):
+            console.print(f"[red]✗ Failed to create thread:[/red] {escape(str(res.get('error', '')))}")
+            return False
+        thread = res.get("thread") or {}
+        try:
+            thread_id = int(thread.get("id") or 0)
+        except Exception:
+            thread_id = 0
+        self._queue_model_inbox_notification(thread_id=thread_id or None, urgent=False, event="thread")
+        if getattr(self, "_turn_in_progress", False):
+            self._notify_inbox_event("thread created · model notified")
+        else:
+            console.print(f"[green]✓[/green] Created thread [cyan]#{thread.get('id')}[/cyan] [bold]{escape(title)}[/bold]. The agent was notified.")
+        return True
+
+    def _queue_model_inbox_notification(
+        self,
+        *,
+        thread_id: Optional[int] = None,
+        urgent: bool = False,
+        event: str = "message",
+    ) -> None:
+        """Queue a lightweight model-context notification for inbox events.
+
+        The user message content stays in the messaging system. We only tell
+        the model that something is waiting, so it can decide when to call
+        check_messages and read it. Notifications are flushed only at safe
+        model-call boundaries so we don't break assistant/tool ordering.
+        """
+        try:
+            pending = getattr(self, "_pending_model_notifications", None)
+            if not isinstance(pending, list):
+                pending = []
+                self._pending_model_notifications = pending
+            pending.append({
+                "thread_id": int(thread_id) if thread_id else None,
+                "urgent": bool(urgent),
+                "event": str(event or "message"),
+                "ts": int(time.time()),
+            })
+        except Exception:
+            pass
+
+    def _flush_model_inbox_notifications(self) -> None:
+        """Inject queued inbox notifications into conversation history safely."""
+        try:
+            pending = getattr(self, "_pending_model_notifications", None)
+            if not isinstance(pending, list) or not pending:
+                return
+            self._pending_model_notifications = []
+            thread_ids = []
+            urgent = False
+            events = []
+            for item in pending:
+                if not isinstance(item, dict):
+                    continue
+                urgent = urgent or bool(item.get("urgent"))
+                ev = item.get("event") or "message"
+                events.append(str(ev))
+                tid = item.get("thread_id")
+                if tid and tid not in thread_ids:
+                    thread_ids.append(tid)
+            count = len(pending)
+            thread_s = ""
+            if thread_ids:
+                shown = ", ".join(f"#{tid}" for tid in thread_ids[:5])
+                if len(thread_ids) > 5:
+                    shown += f", +{len(thread_ids) - 5} more"
+                thread_s = f" Threads: {shown}."
+            priority = "Urgent " if urgent else ""
+            event_s = "alert/message" if urgent else ("thread/message" if "thread" in events else "message")
+            self.conversation_history.append({
+                "role": "system",
+                "content": (
+                    f"{priority}runtime notification: the user sent {count} new {event_s} "
+                    f"event{'s' if count != 1 else ''} to your Sweet message inbox.{thread_s} "
+                    "Do not infer or quote the message contents from this notification. "
+                    "Continue your current work if appropriate; when you decide it is the right time, "
+                    "call check_messages to read and handle the inbox."
+                ),
+                "meta": {"runtime_notification": "inbox", "count": count, "urgent": urgent},
+            })
+            try:
+                self._checkpoint_session(force=True)
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+    def _heartbeat_async(self, status: str = "working"):
+        """Best-effort, non-blocking heartbeat to the billing server."""
+        if not self._messaging_available():
+            return
+        def _send():
+            try:
+                self.billing_client.agent_heartbeat(
+                    self.agent_channel_id,
+                    status=status,
+                    model_variant=getattr(self.client, "model_variant", "pro"),
+                )
+            except Exception:
+                pass
+        try:
+            threading.Thread(target=_send, daemon=True).start()
+        except Exception:
+            pass
+
+    # -----------------------
+    # Always-available input: PinnedBar (TTY) or simple readline thread (pipes).
+    # PinnedBar sets up a terminal scroll region and runs a raw-mode key reader
+    # so typed characters are always visible in a pinned bottom bar, even while
+    # Rich Live tiles repaint above it.
+    # -----------------------
+    def _start_stdin_reader(self):
+        if getattr(self, "_stdin_reader_thread", None) is not None:
+            return
+        self._input_queue = _queue.Queue()
+        self._turn_in_progress = False
+        self._reader_paused = threading.Event()  # kept for _pause_stdin_reader compat
+
+        # Try prompt_toolkit first. It keeps the prompt visible while Rich
+        # output streams above it, without raw cursor-position races.
+        bar = PromptInputBar(
+            q=self._input_queue,
+            on_working_input=self._handle_mid_turn_input,
+        )
+        if bar.setup():
+            self._pinned_bar = bar
+            # Use the bar's reader thread as the sentinel so we don't double-start
+            self._stdin_reader_thread = bar._reader_thread
+            return
+
+        # Optional legacy ANSI scroll-region bar (SWEET_PINNED_BAR=ansi).
+        bar = PinnedBar(
+            q=self._input_queue,
+            on_working_input=self._handle_mid_turn_input,
+        )
+        if bar.setup():
+            self._pinned_bar = bar
+            self._stdin_reader_thread = bar._reader_thread
+            return
+
+        # Fallback: select-based readline reader (non-TTY / no termios)
+        self._pinned_bar = None
+
+        def _reader():
+            import select as _select
+            while True:
+                if self._reader_paused.is_set():
+                    time.sleep(0.05)
+                    continue
+                try:
+                    r, _, _ = _select.select([sys.stdin], [], [], 0.2)
+                    if not r:
+                        continue
+                    line = sys.stdin.readline()
+                except Exception:
+                    self._input_queue.put(None)
+                    return
+                if line == "":
+                    self._input_queue.put(None)
+                    return
+                line = line.rstrip("\n")
+                if getattr(self, "_turn_in_progress", False) and line.strip():
+                    try:
+                        self._handle_mid_turn_input(line.strip())
+                    except Exception:
+                        self._input_queue.put(line)
+                else:
+                    self._input_queue.put(line)
+
+        t = threading.Thread(target=_reader, daemon=True, name="stdin-reader")
+        self._stdin_reader_thread = t
+        t.start()
+
+    def _pause_stdin_reader(self):
+        """Suspend the background reader so an interactive menu can own stdin."""
+        agent = self
+
+        class _PauseCtx:
+            def __enter__(self_inner):
+                bar = getattr(agent, "_pinned_bar", None)
+                if bar and bar._active:
+                    bar.pause()
+                else:
+                    ev = getattr(agent, "_reader_paused", None)
+                    if ev is not None:
+                        ev.set()
+                        time.sleep(0.25)
+                return self_inner
+
+            def __exit__(self_inner, *exc):
+                bar = getattr(agent, "_pinned_bar", None)
+                if bar and bar._active:
+                    bar.resume()
+                else:
+                    ev = getattr(agent, "_reader_paused", None)
+                    if ev is not None:
+                        ev.clear()
+                return False
+
+        return _PauseCtx()
+
+    # -----------------------
+    # Inline arrow-key menus: pick a thread / session with ↑/↓ + Enter instead
+    # of typing an id. Rendered right at the input prompt (not a separate
+    # full-screen UI). Falls back to a numbered prompt when stdin isn't a TTY.
+    # -----------------------
+    def _menu_supported(self) -> bool:
+        try:
+            return bool(sys.stdin.isatty() and sys.stdout.isatty())
+        except Exception:
+            return False
+
+    def _interactive_select(
+        self,
+        title: str,
+        items: List[Any],
+        *,
+        render: Optional[Callable[[Any], str]] = None,
+        footer: str = "↑/↓ move · Enter select · Esc cancel",
+    ) -> Optional[Any]:
+        """Render an inline ↑/↓ menu and return the chosen item (or None if cancelled)."""
+        if not items:
+            return None
+        render = render or (lambda x: str(x))
+
+        # Non-TTY fallback: numbered list read through the normal input queue.
+        if not self._menu_supported():
+            console.print(f"[bold cyan]{escape(title)}[/bold cyan]")
+            for i, it in enumerate(items, 1):
+                console.print(f"  [cyan]{i}[/cyan]. {escape(render(it))}")
+            console.print("[dim]Enter a number (blank to cancel):[/dim]")
+            try:
+                raw = self._read_user_line().strip()
+            except Exception:
+                return None
+            if not raw.isdigit():
+                return None
+            n = int(raw)
+            return items[n - 1] if 1 <= n <= len(items) else None
+
+        import termios
+        import tty
+        import select as _select
+
+        n = len(items)
+        idx = 0
+
+        try:
+            term_size = os.get_terminal_size()
+            term_w = int(getattr(term_size, "columns", 80) or 80)
+            term_h = int(getattr(term_size, "lines", 24) or 24)
+        except Exception:
+            term_w = 80
+            term_h = 24
+        try:
+            configured_visible = int(os.environ.get("SWEET_MENU_MAX_VISIBLE", "12") or "12")
+        except Exception:
+            configured_visible = 12
+        # Keep menus usable in small terminals and prevent long session lists
+        # from scrolling off-screen.
+        visible_count = max(3, min(n, configured_visible, max(3, term_h - 8)))
+
+        def _label(i: int) -> str:
+            txt = render(items[i])
+            # Strip newlines and clamp so a row never wraps (which would break redraw math).
+            txt = " ".join(str(txt).split())
+            max_len = max(10, term_w - 4)
+            if len(txt) > max_len:
+                txt = txt[: max_len - 1] + "…"
+            return txt
+
+        block_lines = visible_count + 1  # visible rows + footer line
+
+        def _window_start() -> int:
+            if n <= visible_count:
+                return 0
+            half = visible_count // 2
+            start = max(0, idx - half)
+            return min(start, max(0, n - visible_count))
+
+        def _render_block(first: bool):
+            out = []
+            if not first:
+                out.append(f"\x1b[{block_lines}A")  # move cursor up to first row
+            start = _window_start()
+            end = min(n, start + visible_count)
+            for i in range(start, end):
+                marker = "\x1b[1;36m❯ " if i == idx else "  "
+                reset = "\x1b[0m"
+                body = _label(i)
+                if i == idx:
+                    out.append(f"\r\x1b[2K{marker}{body}{reset}\n")
+                else:
+                    out.append(f"\r\x1b[2K{marker}\x1b[0m{body}\n")
+            # Clear any unused rows if list shrank or visible_count > n.
+            for _ in range(max(0, visible_count - (end - start))):
+                out.append("\r\x1b[2K\n")
+            pos = f"{idx + 1}/{n}"
+            more = ""
+            if start > 0:
+                more += " ↑ more"
+            if end < n:
+                more += " ↓ more"
+            out.append(f"\r\x1b[2K\x1b[2m{footer} · {pos}{more}\x1b[0m\n")
+            sys.stdout.write("".join(out))
+            sys.stdout.flush()
+
+        chosen: Optional[Any] = None
+        with self._pause_stdin_reader():
+            fd = sys.stdin.fileno()
+            old_attrs = termios.tcgetattr(fd)
+            try:
+                console.print(f"\n[bold cyan]{escape(title)}[/bold cyan]")
+                tty.setcbreak(fd)
+                _render_block(first=True)
+                while True:
+                    r, _, _ = _select.select([fd], [], [], 0.5)
+                    if not r:
+                        continue
+                    ch = os.read(fd, 1)
+                    if not ch:
+                        break
+                    if ch == b"\x03":  # Ctrl-C
+                        raise KeyboardInterrupt
+                    if ch in (b"\r", b"\n"):
+                        chosen = items[idx]
+                        break
+                    if ch in (b"q", b"Q"):
+                        break
+                    if ch == b"\x1b":
+                        r2, _, _ = _select.select([fd], [], [], 0.05)
+                        if not r2:
+                            break  # bare ESC → cancel
+                        seq = os.read(fd, 2)
+                        if seq in (b"[A", b"OA"):
+                            idx = (idx - 1) % n
+                            _render_block(first=False)
+                        elif seq in (b"[B", b"OB"):
+                            idx = (idx + 1) % n
+                            _render_block(first=False)
+                        elif seq in (b"[H", b"OH"):
+                            idx = 0
+                            _render_block(first=False)
+                        elif seq in (b"[F", b"OF"):
+                            idx = n - 1
+                            _render_block(first=False)
+                        elif seq.startswith(b"[5"):  # PageUp (often ESC [ 5 ~)
+                            idx = max(0, idx - visible_count)
+                            # consume trailing "~" if it wasn't read in seq
+                            try:
+                                _select.select([fd], [], [], 0.01)
+                            except Exception:
+                                pass
+                            _render_block(first=False)
+                        elif seq.startswith(b"[6"):  # PageDown
+                            idx = min(n - 1, idx + visible_count)
+                            try:
+                                _select.select([fd], [], [], 0.01)
+                            except Exception:
+                                pass
+                            _render_block(first=False)
+                        continue
+                    if ch in (b"k",):  # vim-style up
+                        idx = (idx - 1) % n
+                        _render_block(first=False)
+                        continue
+                    if ch in (b"j",):  # vim-style down
+                        idx = (idx + 1) % n
+                        _render_block(first=False)
+                        continue
+                    if ch.isdigit():
+                        d = int(ch.decode())
+                        if 1 <= d <= n:
+                            idx = d - 1
+                            _render_block(first=False)
+                        continue
+                    if ch in (b"g",):  # vim-style top
+                        idx = 0
+                        _render_block(first=False)
+                        continue
+                    if ch in (b"G",):  # vim-style bottom
+                        idx = n - 1
+                        _render_block(first=False)
+                        continue
+            finally:
+                try:
+                    termios.tcsetattr(fd, termios.TCSADRAIN, old_attrs)
+                except Exception:
+                    pass
+        # Leave a clean line after the menu.
+        try:
+            sys.stdout.write("\n")
+            sys.stdout.flush()
+        except Exception:
+            pass
+        return chosen
+
+    def _collect_saved_sessions(self, sessions_dir: str = "sessions") -> List[Dict[str, Any]]:
+        """Collect saved session metadata for interactive /resume.
+
+        Fast path only: read filenames + mtimes, not every JSON file. Some
+        workspaces have thousands of session snapshots and parsing them all
+        makes `/resume` feel like it did nothing for several seconds.
+        """
+        results: List[Dict[str, Any]] = []
+        try:
+            if os.path.exists(sessions_dir):
+                for filename in os.listdir(sessions_dir):
+                    if not (filename.startswith("session-") and filename.endswith(".json")):
+                        continue
+                    path = os.path.join(sessions_dir, filename)
+                    base = os.path.basename(path)
+                    sid = base.replace("session-", "").replace(".json", "")
+                    try:
+                        mtime = os.path.getmtime(path)
+                    except Exception:
+                        mtime = 0
+                    started = None
+                    m = re.match(r"(\d{8})-(\d{6})", sid)
+                    if m:
+                        try:
+                            started = datetime.strptime(m.group(1) + m.group(2), "%Y%m%d%H%M%S").timestamp()
+                        except Exception:
+                            started = None
+                    reason = ""
+                    try:
+                        parts = sid.split("-")
+                        if len(parts) >= 2:
+                            reason = parts[-1]
+                    except Exception:
+                        reason = ""
+                    results.append({
+                        "id": sid,
+                        "path": path,
+                        "started_at": started,
+                        "ended_at": None,
+                        "duration_seconds": None,
+                        "last_preview": reason or base,
+                        "mtime": mtime,
+                    })
+            results.sort(key=lambda r: float(r.get("mtime") or 0), reverse=True)
+        except Exception:
+            pass
+        return results
+
+    @staticmethod
+    def _format_session_choice(session: Dict[str, Any]) -> str:
+        sid = str(session.get("id") or "")
+        label = sid
+        m = re.match(r"(\d{8})-(\d{6})", sid)
+        if m:
+            try:
+                dt = datetime.strptime(m.group(1) + m.group(2), "%Y%m%d%H%M%S")
+                label = dt.strftime("%b %d, %Y · %H:%M")
+            except Exception:
+                label = sid
+        dur = session.get("duration_seconds")
+        if isinstance(dur, (int, float)) and dur >= 60:
+            dur_s = f" ({int(dur) // 60}m)"
+        elif isinstance(dur, (int, float)):
+            dur_s = f" ({int(dur)}s)"
+        else:
+            dur_s = ""
+        preview = session.get("last_preview") or "(no preview)"
+        return f"{label}{dur_s} — {preview}"
+
+    def _restore_session_from_path(self, session_path: str) -> bool:
+        """Restore a session into the current interactive process."""
+        try:
+            session_data = load_session_data(session_path)
+            messages = session_data.get("messages", [])
+            if not isinstance(messages, list):
+                raise ValueError("session has no message list")
+
+            self.conversation_history = messages
+            self.conversation_summary = session_data.get("conversation_summary") or ""
+            if "cwd" in session_data and isinstance(session_data.get("cwd"), str):
+                self.session_cwd = session_data["cwd"]
+
+            tool_call_map: Dict[str, Dict[str, Any]] = {}
+            for m in messages:
+                if isinstance(m, dict) and m.get("role") == "assistant" and m.get("tool_calls"):
+                    for tc in (m.get("tool_calls") or []):
+                        tc_id = tc.get("id") or tc.get("tool_call_id") or ""
+                        fn = (tc.get("function") or {})
+                        name = fn.get("name") or ""
+                        args_raw = fn.get("arguments") or ""
+                        args_obj: Dict[str, Any] = {}
+                        if isinstance(args_raw, str) and args_raw.strip():
+                            try:
+                                args_obj = json.loads(args_raw)
+                            except Exception:
+                                args_obj = {"_raw": args_raw}
+                        tool_call_map[tc_id] = {"name": name, "args": args_obj}
+
+            try:
+                sub_snap = session_data.get("subagents")
+                if isinstance(sub_snap, dict):
+                    interrupted = self._restore_subagents_from_state(sub_snap)
+                    n_jobs = len(sub_snap.get("jobs") or {})
+                    n_sessions = len(sub_snap.get("sessions") or {})
+                    if n_sessions or n_jobs:
+                        suffix = f", {interrupted} marked interrupted" if interrupted else ""
+                        console.print(f"[dim]🧵 Restored {n_sessions} subagent session(s), {n_jobs} job(s){suffix}[/dim]")
+            except Exception as e:
+                console.print(f"[dim]⚠ Failed to restore subagent state: {escape(str(e))}[/dim]")
+
+            try:
+                valid_messages = self._filter_valid_messages(messages)
+            except Exception:
+                valid_messages = list(messages)
+            non_system = [m for m in valid_messages if isinstance(m, dict) and m.get("role") in ("user", "assistant", "tool")]
+            while non_system and non_system[-1].get("role") == "user":
+                non_system.pop()
+            self._resume_tail_messages = (non_system[-3:] if len(non_system) > 3 else non_system) or None
+            self._resume_tool_call_map = tool_call_map
+
+            console.print(f"[green]✓[/green] Resumed session from [bold]{escape(session_path)}[/bold]")
+            if self.session_cwd:
+                console.print(f"[dim]Working directory: {escape(self.session_cwd)}[/dim]")
+            return True
+        except Exception as e:
+            console.print(f"[red]✗ Failed to resume session:[/red] {escape(str(e))}")
+            return False
+
+    def resume_session_interactive(self, arg: str = "") -> bool:
+        """Resume a saved session from inside the interactive shell."""
+        arg = (arg or "").strip()
+        try:
+            # Save current state without marking active subagents interrupted.
+            # Full save_session() is for process exits; using it here would make
+            # switching sessions destructive to still-running subagents.
+            self._checkpoint_session(force=True)
+            try:
+                tokens = self._estimate_messages_tokens(self.conversation_history)
+            except Exception:
+                tokens = None
+            self._write_session_snapshot_file(
+                reason="resume_switch",
+                token_estimate=tokens,
+                extra={"note": "snapshot before interactive /resume switch"},
+            )
+        except Exception:
+            pass
+
+        target_path: Optional[str] = None
+        if arg:
+            if arg.lower() in ("last", "latest"):
+                target_path = find_latest_session()
+            elif os.path.isfile(arg):
+                target_path = arg
+            else:
+                guess = os.path.join("sessions", f"session-{arg}.json")
+                if os.path.isfile(guess):
+                    target_path = guess
+
+        if not target_path:
+            sessions = self._collect_saved_sessions()
+            if not sessions:
+                console.print("[dim]No saved sessions found in ./sessions[/dim]")
+                return False
+            chosen = self._interactive_select(
+                "Resume a session — ↑/↓ to choose (newest first)",
+                sessions,
+                render=self._format_session_choice,
+            )
+            if not chosen:
+                console.print("[dim]Resume cancelled.[/dim]")
+                return False
+            target_path = chosen.get("path")
+
+        if not target_path:
+            console.print("[red]✗ No matching session found.[/red]")
+            return False
+        ok = self._restore_session_from_path(target_path)
+        if ok:
+            try:
+                if self._resume_tail_messages:
+                    console.print("[dim]Last completed messages from resumed session:[/dim]")
+                    for msg in self._resume_tail_messages:
+                        role = msg.get("role", "")
+                        content = msg.get("content") or msg.get("reasoning_content") or ""
+                        if not isinstance(content, str) or not content.strip():
+                            continue
+                        label = "User" if role == "user" else ("Tool" if role == "tool" else "Assistant")
+                        text = content.strip()
+                        if len(text) > 800:
+                            text = text[:500] + "\n... [truncated] ...\n" + text[-200:]
+                        console.print(Panel(
+                            text,
+                            title=f"[bold cyan]🧾 {label}[/bold cyan]",
+                            title_align="left",
+                            border_style="dim",
+                            padding=(1, 2),
+                            width=80,
+                        ))
+                    self._resume_tail_messages = None
+                    self._resume_tool_call_map = {}
+            except Exception:
+                pass
+        return ok
+
+    def _read_user_line(self) -> str:
+        """Blocking read of the next idle-prompt line from the reader thread.
+        Uses a short-timeout loop so Ctrl+C still raises KeyboardInterrupt here."""
+        self._start_stdin_reader()
+        while True:
+            try:
+                item = self._input_queue.get(timeout=0.2)
+            except _queue.Empty:
+                continue
+            if item is None:
+                raise EOFError
+            return item
+
+    def _handle_mid_turn_input(self, line: str):
+        """Route a line typed while the agent is working.
+
+        Default: the input bar behaves exactly as it does when idle. Whatever
+        you type queues as your next prompt and runs the moment the current
+        turn finishes (and takes priority over the next autopilot injection).
+
+        Messaging to a running/sleeping agent is now opt-in, via commands:
+        - '/alert <text>'              deliver now and notify the agent.
+        - '/msg <thread_id> <text>'    post into a specific thread's inbox.
+        - '/newthread <title> | <txt>' open a new thread with a first message.
+
+        Everything else — plain text and any other slash command — is queued.
+        """
+        stripped = line.strip()
+        if not stripped:
+            return
+        low = stripped.lower()
+
+        # --- Explicit messaging commands: act immediately on the inbox/threads ---
+        if low.startswith("/alert"):
+            text = stripped[len("/alert"):].strip()
+            if not text:
+                self._notify_input_bar("Usage: /alert <message>")
+                return
+            if self._post_inbox_message(text, alert=True):
+                self._notify_inbox_event("alert sent · model notified")
+            else:
+                self._notify_input_bar("alert failed")
+            return
+
+        if low.startswith("/inbox "):
+            text = stripped[len("/inbox "):].strip()
+            if not text:
+                self._notify_input_bar("Usage: /inbox <message>")
+                return
+            if self._post_inbox_message(text, alert=False):
+                self._notify_inbox_event("sent to inbox · model notified")
+            else:
+                self._notify_input_bar("inbox send failed")
+            return
+
+        if low.startswith("/msg "):
+            rest = stripped[len("/msg "):].strip()
+            parts = rest.split(None, 1)
+            if len(parts) < 2 or not parts[0].lstrip("#").isdigit():
+                self._notify_input_bar("Usage: /msg <thread_id> <message>")
+                return
+            self.send_thread_message(int(parts[0].lstrip("#")), parts[1])
+            return
+
+        if low.startswith("/newthread"):
+            rest = stripped[len("/newthread"):].strip()
+            if not rest:
+                self._notify_input_bar("Usage: /newthread <title> | <message>")
+                return
+            if "|" in rest:
+                title, content = rest.split("|", 1)
+                self.create_message_thread(title.strip() or "New thread", content.strip())
+            else:
+                self.create_message_thread(rest)
+            return
+
+        # --- Default: queue as the next prompt (input bar stays first-class) ---
+        self._input_queue.put(stripped)
+        if low.startswith("/"):
+            self._notify_input_bar(f"{stripped.split()[0]} queued", queued_delta=1)
+        else:
+            self._notify_input_bar("queued as next prompt", queued_delta=1)
+
+    def _notify_input_bar(self, text: str = "", queued_delta: int = 0):
+        bar = getattr(self, "_pinned_bar", None)
+        if bar and getattr(bar, "_active", False) and hasattr(bar, "notify"):
+            try:
+                bar.notify(text, queued_delta=queued_delta)
+                return
+            except Exception:
+                pass
+        # Fallback path only: safe enough because this is used when there is no
+        # active prompt_toolkit bar / live prompt.
+        if text:
+            console.print(f"[dim]{escape(text)}[/dim]")
+
+    def _notify_inbox_event(self, text: str = "inbox notified", inbox_delta: int = 1):
+        bar = getattr(self, "_pinned_bar", None)
+        if bar and getattr(bar, "_active", False) and hasattr(bar, "notify"):
+            try:
+                bar.notify(text, inbox_delta=inbox_delta)
+                return
+            except Exception:
+                pass
+        if text:
+            console.print(f"[dim]{escape(text)}[/dim]")
+
+    def _queue_snapshot(self) -> List[str]:
+        q = getattr(self, "_input_queue", None)
+        if q is None:
+            return []
+        try:
+            with q.mutex:
+                return [str(x) for x in list(q.queue) if x is not None and str(x).strip()]
+        except Exception:
+            return []
+
+    def display_prompt_queue(self):
+        items = self._queue_snapshot()
+        if not items:
+            console.print("[dim]Prompt queue is empty.[/dim]")
+            return
+        console.print(f"[bold]Prompt queue ({len(items)}):[/bold]")
+        for i, item in enumerate(items, 1):
+            preview = item.replace("\n", " ")
+            if len(preview) > 140:
+                preview = preview[:137] + "..."
+            console.print(f"  [cyan]{i}[/cyan]. {escape(preview)}")
+
+    def clear_prompt_queue(self):
+        q = getattr(self, "_input_queue", None)
+        if q is None:
+            console.print("[dim]Prompt queue is empty.[/dim]")
+            return
+        removed = 0
+        try:
+            kept = []
+            with q.mutex:
+                while q.queue:
+                    item = q.queue.popleft()
+                    if item is None:
+                        kept.append(item)
+                    else:
+                        removed += 1
+                for item in kept:
+                    q.queue.append(item)
+            bar = getattr(self, "_pinned_bar", None)
+            if bar and getattr(bar, "_active", False) and hasattr(bar, "notify"):
+                try:
+                    bar._queued_count = 0
+                    bar.notify("queue cleared")
+                except Exception:
+                    pass
+        except Exception:
+            removed = 0
+        console.print(f"[green]✓[/green] Cleared {removed} queued prompt{'s' if removed != 1 else ''}.")
+
+    def _pop_pending_input(self) -> Optional[str]:
+        """Non-blocking: return the next queued user line, or None if empty.
+
+        Used so a line typed mid-turn always takes priority over the next
+        autopilot injection — the input bar stays first-class even at 24/7.
+        """
+        q = getattr(self, "_input_queue", None)
+        if q is None:
+            return None
+        try:
+            item = q.get_nowait()
+        except Exception:
+            return None
+        if item is None:
+            # EOF sentinel — put it back so the blocking reader still sees it.
+            try:
+                q.put(None)
+            except Exception:
+                pass
+            return None
+        try:
+            bar = getattr(self, "_pinned_bar", None)
+            if bar and getattr(bar, "_active", False) and hasattr(bar, "notify"):
+                bar.notify("", queued_delta=-1)
+        except Exception:
+            pass
+        return item
+
+    def _post_inbox_message(self, content: str, alert: bool = False) -> bool:
+        """Post a user message into the most recent open thread (creating a
+        'CLI' thread when none exists). Returns True on success."""
+        if not self._messaging_available():
+            return False
+        try:
+            thread_id = 0
+            res = self.billing_client.list_agent_threads()
+            if res.get("ok"):
+                threads = res.get("threads") or []
+                open_threads = [t for t in threads if (t.get("status") or "open") == "open"]
+                if open_threads:
+                    thread_id = int(open_threads[0].get("id") or 0)
+            if not thread_id:
+                created = self.billing_client.create_agent_thread("CLI")
+                if created.get("ok"):
+                    thread_id = int((created.get("thread") or {}).get("id") or 0)
+            if not thread_id:
+                return False
+            posted = self.billing_client.post_agent_message(thread_id, content, role="user", alert=alert)
+            ok = bool(posted.get("ok"))
+            if ok:
+                self._queue_model_inbox_notification(thread_id=thread_id, urgent=bool(alert), event="alert" if alert else "message")
+            return ok
+        except Exception:
+            return False
 
     def _stats_file_path(self) -> Path:
         # Keep it stable and local; safe for both repo + packaged installs.
@@ -1964,7 +3582,74 @@ You are designed for continuous autonomous operation. "No user input" does not m
                     hue = (col * 9.0) + (row * 18.0) + (animate_phase * 24.0)
                     out.append(ch, style=f"bold {_hsv_hex(hue)}")
             out.append("\n")
-        return out
+        # Final ordering repair: OpenAI-compatible APIs require an assistant
+        # message with tool_calls to be followed immediately by tool messages
+        # for every tool_call_id. Interrupts, old checkpoints, and compaction
+        # can leave an otherwise-valid assistant tool-call turn without the
+        # complete tool-result block. Drop those incomplete assistant turns and
+        # any orphan tool messages so fallback/non-stream requests never 400
+        # with "insufficient tool messages following tool_calls message".
+        repaired: List[Dict[str, Any]] = []
+        i = 0
+        while i < len(out):
+            msg = out[i]
+            if not isinstance(msg, dict):
+                repaired.append(msg)
+                i += 1
+                continue
+
+            if msg.get("role") == "assistant" and msg.get("tool_calls"):
+                expected_ids: List[str] = []
+                for tc in msg.get("tool_calls") or []:
+                    if isinstance(tc, dict) and isinstance(tc.get("id"), str) and tc.get("id"):
+                        expected_ids.append(tc.get("id"))
+
+                if not expected_ids:
+                    # No usable ids means no valid tool protocol can follow.
+                    new_msg = dict(msg)
+                    new_msg.pop("tool_calls", None)
+                    if isinstance(new_msg.get("content"), str) and new_msg.get("content").strip():
+                        repaired.append(new_msg)
+                    i += 1
+                    continue
+
+                j = i + 1
+                tool_block: List[Dict[str, Any]] = []
+                seen_ids: set = set()
+                while j < len(out) and isinstance(out[j], dict) and out[j].get("role") == "tool":
+                    tid = out[j].get("tool_call_id")
+                    if isinstance(tid, str):
+                        seen_ids.add(tid)
+                    tool_block.append(out[j])
+                    j += 1
+
+                if set(expected_ids) <= seen_ids:
+                    repaired.append(msg)
+                    # Keep only tool messages that correspond to this assistant
+                    # turn; drop unrelated orphan tool messages in the block.
+                    for tool_msg in tool_block:
+                        if tool_msg.get("tool_call_id") in set(expected_ids):
+                            repaired.append(tool_msg)
+                else:
+                    # Incomplete tool block: preserve assistant text if any, but
+                    # remove tool_calls so the API doesn't expect tool results.
+                    new_msg = dict(msg)
+                    new_msg.pop("tool_calls", None)
+                    if isinstance(new_msg.get("content"), str) and new_msg.get("content").strip():
+                        repaired.append(new_msg)
+                i = j
+                continue
+
+            if msg.get("role") == "tool":
+                # Orphan tool result with no immediately preceding assistant
+                # tool_calls. It cannot be sent to the API safely.
+                i += 1
+                continue
+
+            repaired.append(msg)
+            i += 1
+
+        return repaired
 
     @staticmethod
     def _build_terminal_chrome(width: int, label: str) -> Table:
@@ -3574,6 +5259,7 @@ You are designed for continuous autonomous operation. "No user input" does not m
                     pass  # Ignore errors if Live context is already closed
             
             try:
+                self._flush_model_inbox_notifications()
                 # Calculate safe max_tokens to avoid exceeding context limit
                 max_tokens = self._calculate_safe_max_tokens(self.conversation_history)
                 # Sanitize before sending: repairs any malformed tool_call
@@ -3585,7 +5271,7 @@ You are designed for continuous autonomous operation. "No user input" does not m
                 # Start the stream
                 stream = self.client.chat(
                     messages=stream_messages,
-                    tools=self.tool_registry.get_tool_definitions(),
+                    tools=self.tool_registry.get_tool_definitions(compact=(self.provider == "local")),
                     stream=True,
                     max_tokens=max_tokens,
                 )
@@ -3643,7 +5329,7 @@ You are designed for continuous autonomous operation. "No user input" does not m
                                 # Stream reasoning live in real time
                                 stream_reasoning(accumulated_reasoning_content)
                             # Keep thinking spinner visible during reasoning
-                            if current_state == 'thinking' and live and not thinking_live_stopped_early:
+                            if current_state in ('thinking', 'reasoning') and live and not thinking_live_stopped_early:
                                 try:
                                     live.update(Panel(Spinner("dots", text="[dim]Thinking...[/dim]"), border_style="dim", padding=(0, 1)))
                                     # Force flush to ensure spinner updates are visible immediately
@@ -3800,7 +5486,7 @@ You are designed for continuous autonomous operation. "No user input" does not m
                                                             time.sleep(0.02)  # Brief pause to ensure spinner is gone before tile appears
                                                         except Exception:
                                                             pass
-                                                    elif current_state == 'thinking' and thinking_live_ref:
+                                                    elif current_state in ('thinking', 'reasoning') and thinking_live_ref:
                                                         # Also handle case where state wasn't updated yet
                                                         try:
                                                             preserve = bool(
@@ -3842,8 +5528,10 @@ You are designed for continuous autonomous operation. "No user input" does not m
                                                     tile_spinner = Spinner("dots", text=prep_text)
                                                     prep_panel = Panel(tile_spinner, title=panel_title, border_style=tile_border, padding=(0, 1))
                                                     prep_live = Live(prep_panel, console=console, refresh_per_second=10, screen=False)
-                                                    prep_live.start()
+                                                    # Track BEFORE starting so crash/exception between start
+                                                    # and track doesn't leave an un-tracked Live on console._live
                                                     self._track_live_ref(prep_live)
+                                                    prep_live.start()
                                                     # Use idx as key initially, will migrate to tool_call_id when available
                                                     temp_key = f"idx_{idx}" if not tc.id else tc.id
                                                     tool_call_live_map[temp_key] = {
@@ -4067,7 +5755,7 @@ You are designed for continuous autonomous operation. "No user input" does not m
                                 if delta.content:
                                     _stop_status_spinner(clear=True)
                                     last_ui_activity_ts = time.time()
-                                    if current_state == 'thinking':
+                                    if current_state in ('thinking', 'reasoning'):
                                         current_state = 'content'
                                         accumulated_content = delta.content
                                         header_text = Text("Agent:", style="bold green")
@@ -4108,7 +5796,7 @@ You are designed for continuous autonomous operation. "No user input" does not m
                                     _stop_status_spinner(clear=True)
                                     last_ui_activity_ts = time.time()
                                     # Hide thinking spinner when tool calls are detected
-                                    if current_state == 'thinking':
+                                    if current_state in ('thinking', 'reasoning'):
                                         current_state = 'tools'
                                         # For write_file, the tile is already shown via its own Live context
                                         # Don't update main Live - just let it exit naturally
@@ -4240,7 +5928,7 @@ You are designed for continuous autonomous operation. "No user input" does not m
                     max_tokens = self._calculate_safe_max_tokens(valid_messages)
                     resp = self.client.chat(
                         messages=valid_messages,
-                        tools=self.tool_registry.get_tool_definitions(),
+                        tools=self.tool_registry.get_tool_definitions(compact=(self.provider == "local")),
                         stream=False,
                         max_tokens=max_tokens,
                     )
@@ -4257,6 +5945,10 @@ You are designed for continuous autonomous operation. "No user input" does not m
                     if resp and hasattr(resp, 'choices') and len(resp.choices) > 0:
                         text = resp.choices[0].message.content or ""
                         if text.strip():
+                            # Clean up any in-flight Live contexts before returning
+                            _stop_status_spinner(clear=True)
+                            stop_reasoning_live(clear=False)
+                            stop_thinking_live(clear=False)
                             console.print("\n[bold green]Agent:[/bold green]")
                             console.print(Markdown(text))
                             return text, None, {}, {}, False, None, False, False
@@ -4320,11 +6012,25 @@ You are designed for continuous autonomous operation. "No user input" does not m
             except Exception:
                 pass
 
+            # Detach any stale Live from the console so the next thinking
+            # spinner starts cleanly (prevents overlapping tile borders).
+            try:
+                clive = getattr(console, "_live", None)
+                if clive is not None:
+                    try:
+                        setattr(console, "_live", None)
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+
             # Print a small explicit "Interrupted" panel so the user has a
             # clear visual marker that the partial output above is not the
             # agent's final answer.
             try:
-                self._print_interrupt_panel()
+                self._print_interrupt_panel(
+                    reason=getattr(self, "_interrupt_reason", "") or "Cancelled by user (Ctrl+C)"
+                )
             except Exception:
                 pass
 
@@ -4447,6 +6153,30 @@ You are designed for continuous autonomous operation. "No user input" does not m
             })
             if session_file:
                 console.print(f"[dim]💾 Session saved to {session_file}[/dim]")
+        except Exception:
+            pass
+
+    def _prepare_terminal_for_visible_save(self) -> None:
+        """Tear down the prompt UI before printing final save/exit messages.
+
+        prompt_toolkit keeps the input line in its own rendered region. During
+        shutdown, a normal console.print can be overwritten or visually hidden
+        by that region. We only use this on real exits (Ctrl-C twice, `exit`,
+        top-level KeyboardInterrupt), not on quiet autosaves/checkpoints.
+        """
+        try:
+            bar = getattr(self, "_pinned_bar", None)
+            if bar and getattr(bar, "_active", False) and hasattr(bar, "teardown"):
+                bar.teardown()
+        except Exception:
+            pass
+        try:
+            self._pinned_bar = None
+        except Exception:
+            pass
+        try:
+            sys.stdout.write("\n")
+            sys.stdout.flush()
         except Exception:
             pass
 
@@ -5451,7 +7181,7 @@ You are designed for continuous autonomous operation. "No user input" does not m
             try:
                 stream = self.client.chat(
                     messages=sub_messages,
-                    tools=self.tool_registry.get_tool_definitions(),
+                    tools=self.tool_registry.get_tool_definitions(compact=(self.provider == "local")),
                     stream=True,
                     max_tokens=max_tokens,
                     timeout=model_timeout_s,
@@ -6105,6 +7835,72 @@ You are designed for continuous autonomous operation. "No user input" does not m
             started = None
         return started is False
 
+    def _get_tool_panel_title(self, function_name: str) -> str:
+        """Consistent Rich panel title for a tool (prep, loading, and result)."""
+        titles = {
+            "run_command": "[bold blue]⚙️  Run Command[/bold blue]",
+            "read_file": "[bold blue]📖 Read File[/bold blue]",
+            "list_directory": "[bold blue]📁 List Directory[/bold blue]",
+            "write_file": "[bold blue]📝 Write File[/bold blue]",
+            "modify_file": "[bold magenta]✏️  Modify File[/bold magenta]",
+            "manage_todos": "[bold cyan]📋 Manage Todos[/bold cyan]",
+            "run_subagent": "[bold magenta]🤖 Run Subagent[/bold magenta]",
+            "web_search": "[bold blue]🔍 web_search[/bold blue]",
+        }
+        return titles.get(function_name, f"[bold blue]🔧 {escape(str(function_name))}[/bold blue]")
+
+    def _resolve_tool_live_info(
+        self,
+        tool_call_id: str,
+        function_name: str,
+        tool_call_live_map: Dict[str, Any],
+    ) -> Optional[Dict[str, Any]]:
+        """Find an active (not stopped) Live tile for this tool call."""
+        if tool_call_id:
+            info = tool_call_live_map.get(tool_call_id)
+            live = info.get("live") if info else None
+            if info and live and not self._is_live_stopped(live):
+                return info
+        for key, info in list(tool_call_live_map.items()):
+            if not info:
+                continue
+            live = info.get("live")
+            if not live or self._is_live_stopped(live):
+                continue
+            bound_id = info.get("tool_call_id")
+            if bound_id and tool_call_id and bound_id != tool_call_id:
+                continue
+            if info.get("function_name") != function_name:
+                continue
+            if tool_call_id:
+                info["tool_call_id"] = tool_call_id
+                tool_call_live_map[tool_call_id] = info
+                if key != tool_call_id:
+                    try:
+                        del tool_call_live_map[key]
+                    except Exception:
+                        pass
+            return info
+        return None
+
+    def _release_tool_live(
+        self,
+        tool_call_id: str,
+        tool_call_live_map: Dict[str, Any],
+        live_ref: Optional[Live],
+    ) -> None:
+        """Finalize a tool tile and drop it from the active map."""
+        try:
+            self._finalize_live_in_place(live_ref)
+        except Exception:
+            pass
+        if tool_call_id:
+            try:
+                if tool_call_live_map.get(tool_call_id, {}).get("live") is live_ref:
+                    del tool_call_live_map[tool_call_id]
+            except Exception:
+                pass
+
     def _stop_live_context(self, live_ref: Optional[Live], clear: bool = True, pause: float = 0.02) -> None:
         """
         Safely stop and exit a Rich Live context without leaving stray UI artifacts.
@@ -6468,8 +8264,10 @@ You are designed for continuous autonomous operation. "No user input" does not m
         except Exception:
             pass
 
+        # Warmup DFlash prefix cache (local only) so subsequent turns hit the cache
+        self._warmup_prefix_cache()
+
         # Run multi-step tool loop until we get a final assistant response without tool calls
-        _post_compaction_retried = False
         while True:
             # Client cancelled / disconnected
             try:
@@ -6493,6 +8291,7 @@ You are designed for continuous autonomous operation. "No user input" does not m
             tool_calls_dict: Dict[int, Dict[str, Any]] = {}
 
             try:
+                self._flush_model_inbox_notifications()
                 # Calculate safe max tokens
                 max_tokens = self._calculate_safe_max_tokens(self.conversation_history)
                 try:
@@ -6501,7 +8300,7 @@ You are designed for continuous autonomous operation. "No user input" does not m
                     stream_messages = self.conversation_history
                 stream = self.client.chat(
                     messages=stream_messages,
-                    tools=self.tool_registry.get_tool_definitions(),
+                    tools=self.tool_registry.get_tool_definitions(compact=(self.provider == "local")),
                     stream=True,
                     max_tokens=max_tokens,
                 )
@@ -6634,27 +8433,8 @@ You are designed for continuous autonomous operation. "No user input" does not m
             })
 
             # If there are no tool calls, this turn is complete
+            # If there are no tool calls, this turn is complete
             if not tool_calls:
-                # POST-COMPACTION STALL GUARD: if the conversation was just compacted
-                # and the model replied with text but no tool_calls, retry once with a
-                # stronger directive to force a tool call.
-                if (self._is_post_compaction_turn()
-                        and not _post_compaction_retried):
-                    _post_compaction_retried = True
-                    retry_msg = (
-                        "[SYSTEM AUTO-INJECTED — the user did NOT type this]\n"
-                        "You just responded with text but NO tool call. "
-                        "The conversation was just compacted — you are mid-task. "
-                        "Re-read the compacted context above and call the tool you need next. "
-                        "Do NOT summarize. Call a tool NOW.\n"
-                    )
-                    self.conversation_history.append({
-                        "role": "user",
-                        "content": retry_msg,
-                        "meta": {"auto_injected": True, "kind": "post_compaction_retry"},
-                    })
-                    _emit({"type": "status", "status": "post_compaction_retry", "message": "Stall detected — retrying with stronger directive"})
-                    continue
 
                 _emit({"type": "done", "data": {"conversation_length": len(self.conversation_history)}})
                 return
@@ -6687,6 +8467,10 @@ You are designed for continuous autonomous operation. "No user input" does not m
                 except Exception as e:
                     result = {"success": False, "error": f"Failed to parse tool args for {fname}: {e}"}
                     self.conversation_history.append({"role": "tool", "tool_call_id": tool_call_id, "content": json.dumps(result)})
+                    try:
+                        self._checkpoint_session(force=True)
+                    except Exception:
+                        pass
                     _emit({"type": "tool_result", "data": {"tool_call_id": tool_call_id, "name": fname, "result": result}})
                     continue
 
@@ -6727,6 +8511,10 @@ You are designed for continuous autonomous operation. "No user input" does not m
                     result_str = json.dumps(minimized)
 
                 self.conversation_history.append({"role": "tool", "tool_call_id": tool_call_id, "content": result_str})
+                try:
+                    self._checkpoint_session(force=True)
+                except Exception:
+                    pass
                 _emit({"type": "tool_result", "data": {"tool_call_id": tool_call_id, "name": fname, "result": minimized}})
 
     def run_conversation(self, user_message: str, thinking_live: Optional[Live] = None, auto_injected: bool = False):
@@ -6736,6 +8524,8 @@ You are designed for continuous autonomous operation. "No user input" does not m
         the human. We mark the appended history entry with meta so later compaction can
         distinguish real user goals from autopilot heartbeats and preserve the human's intent.
         """
+        # Tell the billing server we're actively working (powers the web app's status pill).
+        self._heartbeat_async("working")
         
         # Show thinking spinner immediately, before any processing
         thinking_panel = Panel(Spinner("dots", text="[dim]Thinking...[/dim]"), border_style="dim", padding=(0, 1))
@@ -6824,10 +8614,6 @@ You are designed for continuous autonomous operation. "No user input" does not m
         actual_tokens_turn = 0
         
         try:
-            # Store the initial thinking_live if provided (from main loop)
-            initial_thinking_live = thinking_live
-            
-            _post_compaction_retried = False
             while True:
                 # CRITICAL: Clean up any existing thinking_live from previous iteration before creating new one
                 # This prevents multiple thinking tiles from being visible at once
@@ -6964,58 +8750,9 @@ You are designed for continuous autonomous operation. "No user input" does not m
                         # Brief pause to ensure spinner is fully gone before new tiles
                         time.sleep(0.05)
                     
-                    # Immediately after main Live exits, create Live contexts for prepare tiles that don't have them yet
-                    # write_file tiles are already created during streaming, so skip those
-                    if tool_calls and prepare_tiles_info is not None:
-                        # Match tool calls with prepare_tiles_info by function name
-                        for tool_call in tool_calls:
-                            tool_call_id = tool_call.get("id", "")
-                            if tool_call_id and tool_call_id not in tool_call_live_map:
-                                function_name = tool_call["function"]["name"]
-                                # If we already created a tile during streaming (idx-based), reuse it.
-                                existing_live_info = None
-                                for live_info in tool_call_live_map.values():
-                                    if live_info.get("function_name") == function_name and live_info.get("live"):
-                                        existing_live_info = live_info
-                                        break
-                                if existing_live_info:
-                                    tool_call_live_map[tool_call_id] = existing_live_info
-                                    continue
-                                prep_text = f"[dim]Preparing {function_name}...[/dim]"
-                                # Check if we have more specific text from prepare_tiles_info
-                                for prep_idx, prep_info in prepare_tiles_info.items():
-                                    if prep_info.get("function_name") == function_name:
-                                        prep_text = prep_info.get("text", prep_text)
-                                        break
-                                
-                                # CRITICAL: Stop thinking spinner before creating new tile
-                                if current_thinking_live:
-                                    # If reasoning/content was shown in this Live, preserve it on screen.
-                                    if reasoning_displayed_via_live or content_displayed_via_live:
-                                        try:
-                                            setattr(current_thinking_live, "transient", False)
-                                        except Exception:
-                                            pass
-                                        self._stop_live_context(current_thinking_live, clear=False)
-                                    else:
-                                        # Here we want the spinner area cleared so it doesn't visually collide with tool tiles.
-                                        self._stop_live_context(current_thinking_live, clear=True)
-                                    current_thinking_live = None
-                                
-                                prep_panel = Panel(Spinner("dots", text=prep_text), title=f"[bold blue]🔧 {function_name}[/bold blue]", border_style="blue", padding=(0, 1))
-                                prep_live = Live(prep_panel, console=console, refresh_per_second=10, screen=False)
-                                prep_live.start()
-                                self._track_live_ref(prep_live)
-                                tool_call_live_map[tool_call_id] = {
-                                    "live": prep_live,
-                                    "text": prep_text,
-                                    "function_name": function_name
-                                }
-                    
-                    # For write_file and manage_todos tiles created during streaming, they're already visible and running
-                    # No need to refresh them - they persist independently of the main Live context
-                    # The main Live context exiting should not affect them since they're separate Live contexts
-                    pass  # write_file and manage_todos Live contexts are independent and will persist seamlessly
+                    # Streaming may have created write_file / manage_todos tiles during the
+                    # model response. Other tools get a single tile in the execution loop below.
+                    pass
                 
                 # Display reasoning when available (avoid duplicating Live-rendered reasoning).
                 if reasoning_content and reasoning_content.strip() and (not reasoning_displayed_via_live) and (not getattr(self.config, "ui_reasoning_only", False)):
@@ -7084,451 +8821,320 @@ You are designed for continuous autonomous operation. "No user input" does not m
                         function_name = tool_call["function"]["name"]
                         tool_call_id = tool_call.get("id", "")
                         
-                        # Check if we have a Live context from the preparing tile
-                        # For write_file and manage_todos, check both tool_call_id and any idx-based keys as fallback
-                        existing_live_info = None
-                        if tool_call_id:
-                            existing_live_info = tool_call_live_map.get(tool_call_id)
-                    # If not found and it's a tool that streams its tile, search by function name as fallback
-                    if not existing_live_info and function_name in ("write_file", "modify_file", "manage_todos"):
-                        for key, live_info in tool_call_live_map.items():
-                            if live_info.get("function_name") == function_name and live_info.get("live"):
-                                existing_live_info = live_info
-                                # Update the map to use tool_call_id as key for future lookups
-                                if tool_call_id:
-                                    tool_call_live_map[tool_call_id] = live_info
-                                    # Remove old key if different
-                                    if key != tool_call_id:
-                                        try:
-                                            del tool_call_live_map[key]
-                                        except Exception:
-                                            pass
-                                break
+                        existing_live_info = self._resolve_tool_live_info(
+                            tool_call_id, function_name, tool_call_live_map
+                        )
                     
-                    # Create a single persistent tile; start as Preparing and update in place
-                    args_text = tool_call["function"]["arguments"]
-                    parsed: dict[str, Any] = {}
-                    parse_error: dict[str, Exception] = {}
+                        # Create a single persistent tile; start as Preparing and update in place
+                        args_text = tool_call["function"]["arguments"]
+                        parsed: dict[str, Any] = {}
+                        parse_error: dict[str, Exception] = {}
 
-                    # Check if arguments string is empty or missing - this is a critical error
-                    if not args_text or len(args_text.strip()) == 0:
-                        parse_error["error"] = ValueError(f"Tool call arguments are empty or missing. This indicates the LLM did not provide arguments for {function_name}.")
-                    # Parse args immediately (they're already complete at this point)
-                    elif args_text.strip() == "{}":
-                        # Empty JSON object - this is also an error for write_file
-                        if function_name == "write_file":
-                            parse_error["error"] = ValueError(f"write_file arguments are empty JSON object {{}}. File path and content are required.")
-                        else:
-                            # For other tools, empty {} might be valid, so parse it
-                            parsed["value"] = {}
-                    else:
-                        try:
-                            # Clean up JSON if needed (remove code fences)
-                            cleaned_args = args_text
-                            if cleaned_args.startswith("```"):
-                                fence_end = cleaned_args.find("\n")
-                                if fence_end != -1:
-                                    cleaned_args = cleaned_args[fence_end+1:]
-                                    if cleaned_args.endswith("```"):
-                                        cleaned_args = cleaned_args[:-3]
-                                    # Also remove trailing newlines after closing fence
-                                    cleaned_args = cleaned_args.rstrip()
-                            
-                            # Check for incomplete JSON before parsing - detect unterminated strings
-                            # This can happen if the stream was cut off mid-way (API limits, network issues, etc.)
-                            # Check if we have an opening brace but potentially incomplete content
-                            stripped = cleaned_args.strip()
-                            if stripped.startswith('{') and not stripped.endswith('}'):
-                                # Might be incomplete - check if we're mid-string
-                                # Count unescaped quotes to see if we're in the middle of a string
-                                in_string = False
-                                escaped = False
-                                quote_count = 0
-                                for i, char in enumerate(stripped):
-                                    if escaped:
-                                        escaped = False
-                                        continue
-                                    if char == '\\':
-                                        escaped = True
-                                        continue
-                                    if char == '"':
-                                        in_string = not in_string
-                                        quote_count += 1
-                                
-                                # If we're inside a string at the end, or have odd number of quotes, JSON is incomplete
-                                if in_string or (quote_count % 2 != 0):
-                                    parse_error["error"] = ValueError(f"Tool call arguments appear to be incomplete (stream was cut off). JSON string is unterminated. This usually happens with very large files (>15KB). Try splitting the file into smaller chunks or check if the API response was truncated. Args length: {len(args_text)} chars.")
-                                else:
-                                    # Try parsing anyway - might just be missing closing brace
-                                    try:
-                                        parsed["value"] = json.loads(cleaned_args)
-                                    except json.JSONDecodeError as e:
-                                        parse_error["error"] = ValueError(f"Failed to parse JSON - stream may have been cut off: {str(e)}. Args length: {len(args_text)} chars. For large files, consider splitting into smaller chunks.")
-                            else:
-                                # Normal case - try to parse
-                                parsed["value"] = json.loads(cleaned_args)
-                            
-                            # For write_file, validate that content is present and properly set
-                            # CORE FIX: Validate early during parsing to catch issues before execution
-                            if function_name == "write_file" and "value" in parsed:
-                                function_args_check = parsed["value"]
-                                
-                                # Check if content key exists
-                                if "content" not in function_args_check:
-                                    parse_error["error"] = ValueError(f"write_file requires 'content' parameter. Received keys: {list(function_args_check.keys())}. Arguments JSON length: {len(args_text)} chars.")
-                                # Check if content is None
-                                elif function_args_check.get("content") is None:
-                                    parse_error["error"] = ValueError("write_file 'content' parameter cannot be None")
-                                # Check if content is empty string - this is the CORE ISSUE
-                                elif isinstance(function_args_check.get("content"), str) and len(function_args_check.get("content", "")) == 0:
-                                    # Empty string content - reject it early with a clear error message
-                                    parse_error["error"] = ValueError(f"write_file 'content' parameter is empty string. File path: {function_args_check.get('file_path', 'N/A')}. The content field must contain the actual file content.")
-                                # Validate content is actually a string (shouldn't be needed but defensive)
-                                elif not isinstance(function_args_check.get("content"), str):
-                                    parse_error["error"] = ValueError(f"write_file 'content' parameter must be a string, got {type(function_args_check.get('content'))}")
-                        except json.JSONDecodeError as e:
-                            # JSON parsing failed - this might indicate malformed or incomplete JSON
-                            # This could happen if content was truncated during streaming
-                            # Include diagnostic info to help debug
-                            args_preview = args_text[:500] if len(args_text) > 500 else args_text
-                            args_suffix = args_text[-200:] if len(args_text) > 200 else ""
-                            parse_error["error"] = ValueError(f"Failed to parse JSON arguments: {str(e)}\n  Args length: {len(args_text)} chars\n  Preview: {args_preview}...\n  Suffix: ...{args_suffix}")
-                        except KeyError as e:
-                            # KeyError accessing parsed value - provide better error message
-                            parse_error["error"] = ValueError(f"Failed to access parsed arguments: missing key '{e.args[0] if e.args else 'unknown'}'. This may indicate incomplete JSON parsing.")
-                        except Exception as e:
-                            # Catch any other exceptions during parsing/validation
-                            parse_error["error"] = ValueError(f"Unexpected error during argument parsing: {type(e).__name__}: {str(e)}")
-
-                    # Reuse existing Live context if available, otherwise create new one
-                    if existing_live_info and existing_live_info.get("live"):
-                        # Reuse the Live context that was created during streaming
-                        live = existing_live_info["live"]
-                        
-                        # Check for parse errors BEFORE using function_args
-                        if parse_error.get("error") is not None:
-                            prep_title = (
-                                f"[bold blue]📝 Write File[/bold blue]"
-                                if function_name == "write_file"
-                                else f"[bold blue]🔧 {escape(str(function_name))}[/bold blue]"
-                            )
-                            error_panel = Panel(
-                                f"[red]✗ Failed to parse tool arguments: {escape(str(parse_error['error']))}",
-                                title=prep_title, border_style="red", padding=(0, 1),
-                            )
-                            live.update(error_panel)
-                            result = {"success": False, "error": str(parse_error["error"])}
-                            result_str = json.dumps(result)
-                            self.conversation_history.append({
-                                "role": "tool",
-                                "tool_call_id": tool_call["id"],
-                                "content": result_str
-                            })
-                            try:
-                                existing_live_info["live"].stop()
-                            except Exception:
-                                pass
-                            continue
-                        
-                        function_args = parsed.get("value", {})
-                        exec_started_at = time.time()
-                        
-                        # Normalize paths before execution (handles duplicate prefixes, absolute paths, etc.)
-                        function_args = self._normalize_paths_for_execution(function_args, function_name)
-                        
-                        # Create display version with relative paths for UI
-                        display_args = self._normalize_paths_for_display(function_args, function_name)
-                        
-                        # For write_file and manage_todos, execute immediately and update directly to result - skip all intermediate states
-                        # This ensures seamless transition: Preparing -> Result in one smooth update
-                        # No prep_panel update needed - the tile is already showing "Preparing" from streaming
-                        # manage_todos (especially create with many todos) benefits from immediate execution like write_file
-                        # NOTE: run_subagent can take a while (nested model calls), so we do NOT keep it on the fast path;
-                        # we want to show a "Delegating..." / loading state to avoid looking stuck.
-                        if function_name in ("write_file", "modify_file", "manage_todos", "run_subagent_async", "poll_subagent", "list_subagents", "cancel_subagent_job"):
-                            # For write_file, validate arguments before execution to prevent empty content issues
-                            # This is the CORE FIX: reject empty/missing content immediately and return error to LLM
+                        # Check if arguments string is empty or missing - this is a critical error
+                        if not args_text or len(args_text.strip()) == 0:
+                            parse_error["error"] = ValueError(f"Tool call arguments are empty or missing. This indicates the LLM did not provide arguments for {function_name}.")
+                        # Parse args immediately (they're already complete at this point)
+                        elif args_text.strip() == "{}":
+                            # Empty JSON object - this is also an error for write_file
                             if function_name == "write_file":
-                                # Check if content parameter exists
-                                if "content" not in function_args:
-                                    error_msg = f"write_file requires 'content' parameter but it was missing. Received parameters: {list(function_args.keys())}. Please retry with the actual file content."
-                                    error_panel = Panel(
-                                        f"[red]✗[/red] [cyan]Error:[/cyan] Missing 'content' parameter\n  [dim]Received: {escape(str(list(function_args.keys())))}[/dim]",
-                                        title=f"[bold blue]📝 Write File[/bold blue]", border_style="red", padding=(0, 1),
-                                    )
-                                    live.update(error_panel)
-                                    self.conversation_history.append({
-                                        "role": "tool",
-                                        "tool_call_id": tool_call["id"],
-                                        "content": json.dumps({"success": False, "error": error_msg})
-                                    })
-                                    try:
-                                        existing_live_info["live"].stop()
-                                    except Exception:
-                                        pass
-                                    continue
-                                
-                                content_value = function_args.get("content")
-                                # Check if content is None
-                                if content_value is None:
-                                    error_msg = f"write_file 'content' parameter is None. File path: {function_args.get('file_path', 'N/A')}. Please provide the actual file content as a string."
-                                    error_panel = Panel(
-                                        f"[red]✗[/red] [cyan]Error:[/cyan] 'content' is None\n  [dim]file_path: {escape(str(function_args.get('file_path', 'N/A')))}[/dim]",
-                                        title=f"[bold blue]📝 Write File[/bold blue]", border_style="red", padding=(0, 1),
-                                    )
-                                    live.update(error_panel)
-                                    self.conversation_history.append({
-                                        "role": "tool",
-                                        "tool_call_id": tool_call["id"],
-                                        "content": json.dumps({"success": False, "error": error_msg})
-                                    })
-                                    try:
-                                        existing_live_info["live"].stop()
-                                    except Exception:
-                                        pass
-                                    continue
-                                
-                                # Check if content is empty string
-                                if isinstance(content_value, str) and len(content_value) == 0:
-                                    error_msg = f"write_file 'content' parameter is empty string. File path: {function_args.get('file_path', 'N/A')}. Please provide the actual file content. If you intended to create an empty file, use a single space or newline."
-                                    error_panel = Panel(
-                                        f"[red]✗[/red] [cyan]Error:[/cyan] 'content' is empty\n  [dim]file_path: {escape(str(function_args.get('file_path', 'N/A')))}[/dim]\n  [dim]Please provide actual file content[/dim]",
-                                        title=f"[bold blue]📝 Write File[/bold blue]", border_style="red", padding=(0, 1),
-                                    )
-                                    live.update(error_panel)
-                                    self.conversation_history.append({
-                                        "role": "tool",
-                                        "tool_call_id": tool_call["id"],
-                                        "content": json.dumps({"success": False, "error": error_msg})
-                                    })
-                                    try:
-                                        existing_live_info["live"].stop()
-                                    except Exception:
-                                        pass
-                                    continue
-                            
-                            # Execute immediately - both are fast operations
-                            # For manage_todos, use todo_manager if needed
+                                parse_error["error"] = ValueError(f"write_file arguments are empty JSON object {{}}. File path and content are required.")
+                            else:
+                                # For other tools, empty {} might be valid, so parse it
+                                parsed["value"] = {}
+                        else:
                             try:
-                                if function_name == "manage_todos":
-                                    result = self.tool_registry.execute_tool(function_name, function_args, self.todo_manager)
-                                elif function_name == "run_subagent":
-                                    result = self.tool_registry.execute_tool(function_name, function_args, self._run_subagent)
-                                elif function_name == "run_subagent_async":
-                                    result = self.tool_registry.execute_tool(function_name, function_args, self._run_subagent_async)
-                                elif function_name == "poll_subagent":
-                                    result = self.tool_registry.execute_tool(function_name, function_args, self._poll_subagent)
-                                elif function_name == "list_subagents":
-                                    result = self.tool_registry.execute_tool(function_name, function_args, self._list_subagents)
-                                elif function_name == "cancel_subagent_job":
-                                    result = self.tool_registry.execute_tool(function_name, function_args, self._cancel_subagent_job)
-                                else:
-                                    result = self.tool_registry.execute_tool(function_name, function_args)
+                                # Clean up JSON if needed (remove code fences)
+                                cleaned_args = args_text
+                                if cleaned_args.startswith("```"):
+                                    fence_end = cleaned_args.find("\n")
+                                    if fence_end != -1:
+                                        cleaned_args = cleaned_args[fence_end+1:]
+                                        if cleaned_args.endswith("```"):
+                                            cleaned_args = cleaned_args[:-3]
+                                        # Also remove trailing newlines after closing fence
+                                        cleaned_args = cleaned_args.rstrip()
+                            
+                                # Check for incomplete JSON before parsing - detect unterminated strings
+                                # This can happen if the stream was cut off mid-way (API limits, network issues, etc.)
+                                # Check if we have an opening brace but potentially incomplete content
+                                stripped = cleaned_args.strip()
+                                if stripped.startswith('{') and not stripped.endswith('}'):
+                                    # Might be incomplete - check if we're mid-string
+                                    # Count unescaped quotes to see if we're in the middle of a string
+                                    in_string = False
+                                    escaped = False
+                                    quote_count = 0
+                                    for i, char in enumerate(stripped):
+                                        if escaped:
+                                            escaped = False
+                                            continue
+                                        if char == '\\':
+                                            escaped = True
+                                            continue
+                                        if char == '"':
+                                            in_string = not in_string
+                                            quote_count += 1
                                 
-                                # Create final panel with result
-                                if function_name == "manage_todos":
-                                    final_panel = self._create_todos_result_panel(function_args, result)
+                                    # If we're inside a string at the end, or have odd number of quotes, JSON is incomplete
+                                    if in_string or (quote_count % 2 != 0):
+                                        parse_error["error"] = ValueError(f"Tool call arguments appear to be incomplete (stream was cut off). JSON string is unterminated. This usually happens with very large files (>15KB). Try splitting the file into smaller chunks or check if the API response was truncated. Args length: {len(args_text)} chars.")
+                                    else:
+                                        # Try parsing anyway - might just be missing closing brace
+                                        try:
+                                            parsed["value"] = json.loads(cleaned_args)
+                                        except json.JSONDecodeError as e:
+                                            parse_error["error"] = ValueError(f"Failed to parse JSON - stream may have been cut off: {str(e)}. Args length: {len(args_text)} chars. For large files, consider splitting into smaller chunks.")
                                 else:
-                                    final_panel = self._create_result_panel(function_name, function_args, result)
+                                    # Normal case - try to parse
+                                    parsed["value"] = json.loads(cleaned_args)
+                            
+                                # For write_file, validate that content is present and properly set
+                                # CORE FIX: Validate early during parsing to catch issues before execution
+                                if function_name == "write_file" and "value" in parsed:
+                                    function_args_check = parsed["value"]
                                 
-                                # Update immediately - same Live context, seamless transition from Preparing to Result
-                                # No delays, no intermediate states - just smooth text update in the same tile
-                                # The tile persists, only the content changes
-                                live.update(final_panel)
-                                # Minimize result for history
-                                minimized = result
-                                result_str = json.dumps(minimized)
-                                # Add result to history
+                                    # Check if content key exists
+                                    if "content" not in function_args_check:
+                                        parse_error["error"] = ValueError(f"write_file requires 'content' parameter. Received keys: {list(function_args_check.keys())}. Arguments JSON length: {len(args_text)} chars.")
+                                    # Check if content is None
+                                    elif function_args_check.get("content") is None:
+                                        parse_error["error"] = ValueError("write_file 'content' parameter cannot be None")
+                                    # Check if content is empty string - this is the CORE ISSUE
+                                    elif isinstance(function_args_check.get("content"), str) and len(function_args_check.get("content", "")) == 0:
+                                        # Empty string content - reject it early with a clear error message
+                                        parse_error["error"] = ValueError(f"write_file 'content' parameter is empty string. File path: {function_args_check.get('file_path', 'N/A')}. The content field must contain the actual file content.")
+                                    # Validate content is actually a string (shouldn't be needed but defensive)
+                                    elif not isinstance(function_args_check.get("content"), str):
+                                        parse_error["error"] = ValueError(f"write_file 'content' parameter must be a string, got {type(function_args_check.get('content'))}")
+                            except json.JSONDecodeError as e:
+                                # JSON parsing failed - this might indicate malformed or incomplete JSON
+                                # This could happen if content was truncated during streaming
+                                # Include diagnostic info to help debug
+                                args_preview = args_text[:500] if len(args_text) > 500 else args_text
+                                args_suffix = args_text[-200:] if len(args_text) > 200 else ""
+                                parse_error["error"] = ValueError(f"Failed to parse JSON arguments: {str(e)}\n  Args length: {len(args_text)} chars\n  Preview: {args_preview}...\n  Suffix: ...{args_suffix}")
+                            except KeyError as e:
+                                # KeyError accessing parsed value - provide better error message
+                                parse_error["error"] = ValueError(f"Failed to access parsed arguments: missing key '{e.args[0] if e.args else 'unknown'}'. This may indicate incomplete JSON parsing.")
+                            except Exception as e:
+                                # Catch any other exceptions during parsing/validation
+                                parse_error["error"] = ValueError(f"Unexpected error during argument parsing: {type(e).__name__}: {str(e)}")
+
+                        # Reuse existing Live context if available, otherwise create new one
+                        if existing_live_info and existing_live_info.get("live"):
+                            # Reuse the Live context that was created during streaming
+                            live = existing_live_info["live"]
+                        
+                            # Check for parse errors BEFORE using function_args
+                            if parse_error.get("error") is not None:
+                                prep_title = (
+                                    f"[bold blue]📝 Write File[/bold blue]"
+                                    if function_name == "write_file"
+                                    else f"[bold blue]🔧 {escape(str(function_name))}[/bold blue]"
+                                )
+                                error_panel = Panel(
+                                    f"[red]✗ Failed to parse tool arguments: {escape(str(parse_error['error']))}",
+                                    title=prep_title, border_style="red", padding=(0, 1),
+                                )
+                                live.update(error_panel)
+                                result = {"success": False, "error": str(parse_error["error"])}
+                                result_str = json.dumps(result)
                                 self.conversation_history.append({
                                     "role": "tool",
                                     "tool_call_id": tool_call["id"],
                                     "content": result_str
                                 })
-                                # Stop Live context - final panel is displayed
+                                try:
+                                    self._checkpoint_session(force=True)
+                                except Exception:
+                                    pass
                                 try:
                                     existing_live_info["live"].stop()
                                 except Exception:
                                     pass
-                            except Exception as e:
-                                safe_fn = escape(str(function_name))
-                                error_panel = Panel(
-                                    f"[red]✗[/red] [cyan]Error executing {safe_fn}[/cyan]\n  {escape(str(e))}",
-                                    title=f"[bold blue]🔧 {safe_fn}[/bold blue]", border_style="red", padding=(0, 1),
-                                )
-                                live.update(error_panel)
-                                # Add error to history
-                                self.conversation_history.append({
-                                    "role": "tool",
-                                    "tool_call_id": tool_call["id"],
-                                    "content": json.dumps({"success": False, "error": str(e)})
-                                })
-                                try:
-                                    existing_live_info["live"].stop()
-                                except Exception:
-                                    pass
-                            # Skip the rest of the tool execution loop
-                            continue
+                                continue
                         
-                        # For other tools, update prep panel to maintain visibility
-                        prep_text = existing_live_info.get("text", f"[dim]Preparing {escape(str(function_name))}...[/dim]")
-                        safe_fn = escape(str(existing_live_info.get('function_name', function_name)))
-                        prep_panel = Panel(Spinner("dots", text=prep_text), title=f"[bold blue]🔧 {safe_fn}[/bold blue]", border_style="blue", padding=(0, 1))
-                        # Update immediately - no delay between prepare and loading states
-                        live.update(prep_panel)
-                        
-                        # Determine loading message based on tool type (for non-write_file tools)
-                        if function_name == "run_command":
-                            # Ensure a sane default timeout if the model didn't provide one
-                            if "timeout" not in function_args:
-                                function_args["timeout"] = 30
-                            if "timeout_action" not in function_args:
-                                function_args["timeout_action"] = "kill"
-                            cmd = function_args.get("command", "")
-                            display_cmd = cmd if len(cmd) < 50 else cmd[:47] + "..."
-                            # Escape: commands may contain `[...]` (grep regex,
-                            # array literals, etc.) which Rich would otherwise
-                            # parse as console markup.
-                            loading_text = f"[cyan]Running:[/cyan] {escape(display_cmd)} [dim](timeout {function_args['timeout']}s)[/dim]"
-                            panel_title = "[bold blue]⚙️  Run Command[/bold blue]"
-                            panel_style = "blue"
-                        elif function_name == "read_file":
-                            loading_text = f"[cyan]Reading:[/cyan] {escape(str(display_args.get('file_path', '')))}"
-                            panel_title = "[bold blue]📖 Read File[/bold blue]"
-                            panel_style = "blue"
-                        elif function_name == "list_directory":
-                            loading_text = f"[cyan]Listing:[/cyan] {escape(str(display_args.get('directory_path', '')))}"
-                            panel_title = "[bold blue]📁 List Directory[/bold blue]"
-                            panel_style = "blue"
-                        elif function_name == "write_file":
-                            loading_text = f"[cyan]Writing:[/cyan] {escape(str(function_args.get('file_path', '')))}"
-                            panel_title = "[bold blue]📝 Write File[/bold blue]"
-                            panel_style = "blue"
-                        elif function_name == "manage_todos":
-                            action = function_args.get("action", "")
-                            action_verb = {
-                                "create": "Creating",
-                                "update": "Updating",
-                                "list": "Listing",
-                                "clear": "Clearing"
-                            }.get(action, action.capitalize())
-                            loading_text = f"[cyan]{action_verb}:[/cyan] todos"
-                            panel_title = "[bold cyan]📋 Manage Todos[/bold cyan]"
-                            panel_style = "cyan"
-                        elif function_name == "run_subagent":
-                            loading_text = "[cyan]Delegating:[/cyan] run_subagent [dim](sync)[/dim]"
-                            panel_title = "[bold magenta]🤖 Run Subagent[/bold magenta]"
-                            panel_style = "magenta"
-                        elif function_name == "web_search":
-                            loading_text = f"[cyan]Searching:[/cyan] {escape(str(function_args.get('query', ''))[:50])}"
-                            panel_title = f"[bold blue]🔍 web_search[/bold blue]"
-                            panel_style = "blue"
-                        else:
-                            safe_fn = escape(str(function_name))
-                            loading_text = f"[cyan]Executing:[/cyan] {safe_fn}"
-                            panel_title = f"[bold blue]🔧 {safe_fn}[/bold blue]"
-                            panel_style = "blue"
-                        
-                        # Update from prepare state to loading state immediately (no delay)
-                        # This ensures smooth transition without the tile disappearing
-                        # Update happens synchronously in the same Live context - no gap possible
-                        # For write_file, skip loading state entirely since it's so fast - go straight to result
-                        if function_name == "write_file":
-                            # For write_file, skip "Writing" state - it's too fast and causes flicker
-                            # We'll update directly to result after execution
-                            pass  # Don't show loading state for write_file
-                        else:
-                            # For other tools, show loading state
-                            loading_panel = Panel(Spinner("dots", text=loading_text), title=panel_title, border_style=panel_style, padding=(0, 1))
-                            live.update(loading_panel)
-                    else:
-                        # Create new Live context for tools that didn't show preparing tile
-                        # For write_file, this should never happen since we create it during streaming
-                        # But if it does, use consistent title "📝 Write File"
-                        if function_name == "write_file":
-                            prep_title = f"[bold blue]📝 Write File[/bold blue]"
-                        else:
-                            prep_title = f"[bold blue]🔧 {escape(str(function_name))}[/bold blue]"
-                        preparing_spinner = Spinner("dots", text=f"[dim]Preparing {escape(str(function_name))}...[/dim]")
-                        tile = Panel(preparing_spinner, title=prep_title, border_style="blue", padding=(0, 1))
-                        live_ctx = Live(tile, console=console, refresh_per_second=12, screen=False)
-                        live_ctx.__enter__()
-                        self._track_live_ref(live_ctx)
-                        live = live_ctx
-                        # Parse args in background so spinner stays animated
-                        prepare_started_at = time.time()
-                        def _parse_args():
-                            try:
-                                parsed["value"] = json.loads(args_text)
-                            except json.JSONDecodeError as e:
-                                parse_error["error"] = ValueError(f"Failed to parse JSON arguments: {str(e)}")
-                            except Exception as e:
-                                parse_error["error"] = ValueError(f"Unexpected error during argument parsing: {type(e).__name__}: {str(e)}")
-
-                        parse_thread = threading.Thread(target=_parse_args, daemon=True)
-                        parse_thread.start()
-                        # Ensure preparing spinner is visible for a minimum time
-                        MIN_PREPARE_VISIBLE_S = 0.25
-                        while parse_thread.is_alive() or (time.time() - prepare_started_at) < MIN_PREPARE_VISIBLE_S:
-                            time.sleep(0.05)
-                        function_args = parsed.get("value", {})
-
-                    try:
-                        if parse_error.get("error") is not None:
-                            prep_title = f"[bold blue]🔧 {escape(str(function_name))}[/bold blue]"
-                            error_panel = Panel(
-                                f"[red]✗ Failed to parse tool arguments: {escape(str(parse_error['error']))}",
-                                title=prep_title, border_style="red", padding=(0, 1),
-                            )
-                            live.update(error_panel)
-                            result = {"success": False, "error": str(parse_error["error"])}
-                            result_str = json.dumps(result)
-                            self.conversation_history.append({
-                                "role": "tool",
-                                "tool_call_id": tool_call["id"],
-                                "content": result_str
-                            })
-                            # Clean up Live context
-                            try:
-                                if existing_live_info and existing_live_info.get("live"):
-                                    existing_live_info["live"].stop()
-                                elif 'live_ctx' in locals():
-                                    live_ctx.__exit__(None, None, None)
-                            except Exception:
-                                pass
-                            continue
-
-                        # Determine loading message based on tool type; update the same tile
-                        # Set loading_text, panel_title, and panel_style for all tools
-                        # Skip if we already set them in the existing_live_info branch
-                        # For write_file, skip loading state entirely - it's too fast
-                        if not existing_live_info and function_name not in ("write_file", "modify_file"):
+                            function_args = parsed.get("value", {})
                             exec_started_at = time.time()
+                        
+                            # Normalize paths before execution (handles duplicate prefixes, absolute paths, etc.)
+                            function_args = self._normalize_paths_for_execution(function_args, function_name)
+                        
+                            # Create display version with relative paths for UI
+                            display_args = self._normalize_paths_for_display(function_args, function_name)
+                        
+                            # For write_file and manage_todos, execute immediately and update directly to result - skip all intermediate states
+                            # This ensures seamless transition: Preparing -> Result in one smooth update
+                            # No prep_panel update needed - the tile is already showing "Preparing" from streaming
+                            # manage_todos (especially create with many todos) benefits from immediate execution like write_file
+                            # NOTE: run_subagent can take a while (nested model calls), so we do NOT keep it on the fast path;
+                            # we want to show a "Delegating..." / loading state to avoid looking stuck.
+                            if function_name in ("write_file", "modify_file", "manage_todos", "run_subagent_async", "poll_subagent", "list_subagents", "cancel_subagent_job"):
+                                # For write_file, validate arguments before execution to prevent empty content issues
+                                # This is the CORE FIX: reject empty/missing content immediately and return error to LLM
+                                if function_name == "write_file":
+                                    # Check if content parameter exists
+                                    if "content" not in function_args:
+                                        error_msg = f"write_file requires 'content' parameter but it was missing. Received parameters: {list(function_args.keys())}. Please retry with the actual file content."
+                                        error_panel = Panel(
+                                            f"[red]✗[/red] [cyan]Error:[/cyan] Missing 'content' parameter\n  [dim]Received: {escape(str(list(function_args.keys())))}[/dim]",
+                                            title=f"[bold blue]📝 Write File[/bold blue]", border_style="red", padding=(0, 1),
+                                        )
+                                        live.update(error_panel)
+                                        self.conversation_history.append({
+                                            "role": "tool",
+                                            "tool_call_id": tool_call["id"],
+                                            "content": json.dumps({"success": False, "error": error_msg})
+                                        })
+                                        try:
+                                            self._checkpoint_session(force=True)
+                                        except Exception:
+                                            pass
+                                        try:
+                                            existing_live_info["live"].stop()
+                                        except Exception:
+                                            pass
+                                        continue
+                                
+                                    content_value = function_args.get("content")
+                                    # Check if content is None
+                                    if content_value is None:
+                                        error_msg = f"write_file 'content' parameter is None. File path: {function_args.get('file_path', 'N/A')}. Please provide the actual file content as a string."
+                                        error_panel = Panel(
+                                            f"[red]✗[/red] [cyan]Error:[/cyan] 'content' is None\n  [dim]file_path: {escape(str(function_args.get('file_path', 'N/A')))}[/dim]",
+                                            title=f"[bold blue]📝 Write File[/bold blue]", border_style="red", padding=(0, 1),
+                                        )
+                                        live.update(error_panel)
+                                        self.conversation_history.append({
+                                            "role": "tool",
+                                            "tool_call_id": tool_call["id"],
+                                            "content": json.dumps({"success": False, "error": error_msg})
+                                        })
+                                        try:
+                                            self._checkpoint_session(force=True)
+                                        except Exception:
+                                            pass
+                                        try:
+                                            existing_live_info["live"].stop()
+                                        except Exception:
+                                            pass
+                                        continue
+                                
+                                    # Check if content is empty string
+                                    if isinstance(content_value, str) and len(content_value) == 0:
+                                        error_msg = f"write_file 'content' parameter is empty string. File path: {function_args.get('file_path', 'N/A')}. Please provide the actual file content. If you intended to create an empty file, use a single space or newline."
+                                        error_panel = Panel(
+                                            f"[red]✗[/red] [cyan]Error:[/cyan] 'content' is empty\n  [dim]file_path: {escape(str(function_args.get('file_path', 'N/A')))}[/dim]\n  [dim]Please provide actual file content[/dim]",
+                                            title=f"[bold blue]📝 Write File[/bold blue]", border_style="red", padding=(0, 1),
+                                        )
+                                        live.update(error_panel)
+                                        self.conversation_history.append({
+                                            "role": "tool",
+                                            "tool_call_id": tool_call["id"],
+                                            "content": json.dumps({"success": False, "error": error_msg})
+                                        })
+                                        try:
+                                            self._checkpoint_session(force=True)
+                                        except Exception:
+                                            pass
+                                        try:
+                                            existing_live_info["live"].stop()
+                                        except Exception:
+                                            pass
+                                        continue
+                            
+                                # Execute immediately - both are fast operations
+                                # For manage_todos, use todo_manager if needed
+                                try:
+                                    if function_name == "manage_todos":
+                                        result = self.tool_registry.execute_tool(function_name, function_args, self.todo_manager)
+                                    elif function_name == "run_subagent":
+                                        result = self.tool_registry.execute_tool(function_name, function_args, self._run_subagent)
+                                    elif function_name == "run_subagent_async":
+                                        result = self.tool_registry.execute_tool(function_name, function_args, self._run_subagent_async)
+                                    elif function_name == "poll_subagent":
+                                        result = self.tool_registry.execute_tool(function_name, function_args, self._poll_subagent)
+                                    elif function_name == "list_subagents":
+                                        result = self.tool_registry.execute_tool(function_name, function_args, self._list_subagents)
+                                    elif function_name == "cancel_subagent_job":
+                                        result = self.tool_registry.execute_tool(function_name, function_args, self._cancel_subagent_job)
+                                    else:
+                                        result = self.tool_registry.execute_tool(function_name, function_args)
+                                
+                                    # Create final panel with result
+                                    if function_name == "manage_todos":
+                                        final_panel = self._create_todos_result_panel(function_args, result)
+                                    else:
+                                        final_panel = self._create_result_panel(function_name, function_args, result)
+                                
+                                    # Update immediately - same Live context, seamless transition from Preparing to Result
+                                    # No delays, no intermediate states - just smooth text update in the same tile
+                                    # The tile persists, only the content changes
+                                    live.update(final_panel)
+                                    # Minimize result for history
+                                    minimized = result
+                                    result_str = json.dumps(minimized)
+                                    # Add result to history
+                                    self.conversation_history.append({
+                                        "role": "tool",
+                                        "tool_call_id": tool_call["id"],
+                                        "content": result_str
+                                    })
+                                    try:
+                                        self._checkpoint_session(force=True)
+                                    except Exception:
+                                        pass
+                                    # Stop Live context - final panel is displayed
+                                    try:
+                                        existing_live_info["live"].stop()
+                                    except Exception:
+                                        pass
+                                except Exception as e:
+                                    safe_fn = escape(str(function_name))
+                                    error_panel = Panel(
+                                        f"[red]✗[/red] [cyan]Error executing {safe_fn}[/cyan]\n  {escape(str(e))}",
+                                        title=f"[bold blue]🔧 {safe_fn}[/bold blue]", border_style="red", padding=(0, 1),
+                                    )
+                                    live.update(error_panel)
+                                    # Add error to history
+                                    self.conversation_history.append({
+                                        "role": "tool",
+                                        "tool_call_id": tool_call["id"],
+                                        "content": json.dumps({"success": False, "error": str(e)})
+                                    })
+                                    try:
+                                        existing_live_info["live"].stop()
+                                    except Exception:
+                                        pass
+                                # Skip the rest of the tool execution loop
+                                continue
+                        
+                            # Transition the existing tile directly to its loading state (no prep re-flash).
                             if function_name == "run_command":
                                 # Ensure a sane default timeout if the model didn't provide one
                                 if "timeout" not in function_args:
                                     function_args["timeout"] = 30
                                 if "timeout_action" not in function_args:
                                     function_args["timeout_action"] = "kill"
-                                # Default working directory to the session cwd if not provided
-                                if not function_args.get("working_directory"):
-                                    function_args["working_directory"] = self.session_cwd
-
                                 cmd = function_args.get("command", "")
                                 display_cmd = cmd if len(cmd) < 50 else cmd[:47] + "..."
+                                # Escape: commands may contain `[...]` (grep regex,
+                                # array literals, etc.) which Rich would otherwise
+                                # parse as console markup.
                                 loading_text = f"[cyan]Running:[/cyan] {escape(display_cmd)} [dim](timeout {function_args['timeout']}s)[/dim]"
-                                panel_title = "[bold blue]⚙️  Run Command[/bold blue]"
+                                panel_title = self._get_tool_panel_title(function_name)
                                 panel_style = "blue"
                             elif function_name == "read_file":
-                                loading_text = f"[cyan]Reading:[/cyan] {escape(str(function_args.get('file_path', '')))}"
-                                panel_title = "[bold blue]📖 Read File[/bold blue]"
+                                loading_text = f"[cyan]Reading:[/cyan] {escape(str(display_args.get('file_path', '')))}"
+                                panel_title = self._get_tool_panel_title(function_name)
                                 panel_style = "blue"
                             elif function_name == "list_directory":
-                                loading_text = f"[cyan]Listing:[/cyan] {escape(str(function_args.get('directory_path', '')))}"
-                                panel_title = "[bold blue]📁 List Directory[/bold blue]"
+                                loading_text = f"[cyan]Listing:[/cyan] {escape(str(display_args.get('directory_path', '')))}"
+                                panel_title = self._get_tool_panel_title(function_name)
                                 panel_style = "blue"
                             elif function_name == "write_file":
                                 loading_text = f"[cyan]Writing:[/cyan] {escape(str(function_args.get('file_path', '')))}"
-                                panel_title = "[bold blue]📝 Write File[/bold blue]"
+                                panel_title = self._get_tool_panel_title(function_name)
                                 panel_style = "blue"
                             elif function_name == "manage_todos":
                                 action = function_args.get("action", "")
@@ -7539,254 +9145,385 @@ You are designed for continuous autonomous operation. "No user input" does not m
                                     "clear": "Clearing"
                                 }.get(action, action.capitalize())
                                 loading_text = f"[cyan]{action_verb}:[/cyan] todos"
-                                panel_title = "[bold cyan]📋 Manage Todos[/bold cyan]"
+                                panel_title = self._get_tool_panel_title(function_name)
                                 panel_style = "cyan"
+                            elif function_name == "run_subagent":
+                                loading_text = "[cyan]Delegating:[/cyan] run_subagent [dim](sync)[/dim]"
+                                panel_title = self._get_tool_panel_title(function_name)
+                                panel_style = "magenta"
                             elif function_name == "web_search":
                                 loading_text = f"[cyan]Searching:[/cyan] {escape(str(function_args.get('query', ''))[:50])}"
-                                panel_title = f"[bold blue]🔍 web_search[/bold blue]"
+                                panel_title = self._get_tool_panel_title(function_name)
                                 panel_style = "blue"
                             else:
-                                safe_fn2 = escape(str(function_name))
-                                loading_text = f"[cyan]Executing:[/cyan] {safe_fn2}"
-                                panel_title = f"[bold blue]🔧 {safe_fn2}[/bold blue]"
+                                safe_fn = escape(str(function_name))
+                                loading_text = f"[cyan]Executing:[/cyan] {safe_fn}"
+                                panel_title = self._get_tool_panel_title(function_name)
                                 panel_style = "blue"
-
-                            # Update the same tile to the loading state
-                            if live:
-                                live.update(Panel(Spinner("dots", text=loading_text), title=panel_title, border_style=panel_style, padding=(0, 1)))
-
-                        # Execute the tool while keeping the same tile alive
-                        if function_name == "run_command":
-                            live_stdout_stderr = {"stdout": "", "stderr": ""}
-                            last_displayed = {"stdout": "", "stderr": ""}
-                            
-                            def update_output(stdout: str, stderr: str):
-                                """Update output state - called from background threads"""
-                                live_stdout_stderr["stdout"] = stdout
-                                live_stdout_stderr["stderr"] = stderr
-                            
-                            # Start command execution in background thread
-                            result_container = {"result": None}
-                            execution_done = threading.Event()
-                            cancel_event = threading.Event()  # Event to signal cancellation
-                            
-                            # Get timeout from function_args to enforce it in polling loop
-                            command_timeout = function_args.get("timeout", 30)
-                            start_time = time.time()
-                            
-                            def run_command_thread():
+                        
+                            # Update from prepare state to loading state immediately (no delay)
+                            # This ensures smooth transition without the tile disappearing
+                            # Update happens synchronously in the same Live context - no gap possible
+                            # For write_file, skip loading state entirely since it's so fast - go straight to result
+                            if function_name == "write_file":
+                                # For write_file, skip "Writing" state - it's too fast and causes flicker
+                                # We'll update directly to result after execution
+                                pass  # Don't show loading state for write_file
+                            else:
+                                # For other tools, show loading state
+                                loading_panel = Panel(Spinner("dots", text=loading_text), title=panel_title, border_style=panel_style, padding=(0, 1))
+                                live.update(loading_panel)
+                        else:
+                            # Create new Live context for tools that didn't show a tile during streaming
+                            panel_title = self._get_tool_panel_title(function_name)
+                            panel_style = {"manage_todos": "cyan", "run_subagent": "magenta", "modify_file": "magenta"}.get(function_name, "blue")
+                            preparing_spinner = Spinner("dots", text=f"[dim]Preparing {escape(str(function_name))}...[/dim]")
+                            tile = Panel(preparing_spinner, title=panel_title, border_style=panel_style, padding=(0, 1))
+                            live_ctx = Live(tile, console=console, refresh_per_second=12, screen=False)
+                            live_ctx.__enter__()
+                            self._track_live_ref(live_ctx)
+                            live = live_ctx
+                            # Parse args in background so spinner stays animated
+                            prepare_started_at = time.time()
+                            def _parse_args():
                                 try:
-                                    result_container["result"] = self.tool_registry.execute_tool(
-                                        function_name,
-                                        function_args,
-                                        live_callback=update_output,
-                                        cancel_event=cancel_event
-                                    )
-                                finally:
-                                    execution_done.set()
-                            
-                            cmd_thread = threading.Thread(target=run_command_thread, daemon=True)
-                            cmd_thread.start()
-                            
-                            # Poll and update display while command runs
-                            try:
-                                while not execution_done.is_set():
-                                    # Check for timeout - enforce it even if command doesn't
-                                    elapsed = time.time() - start_time
-                                    if elapsed > command_timeout:
-                                        # Timeout exceeded - cancel the command
-                                        cancel_event.set()
-                                        result_container["result"] = {
-                                            "success": False,
-                                            "error": f"Command timed out after {command_timeout}s",
-                                            "stdout": live_stdout_stderr.get("stdout", ""),
-                                            "stderr": live_stdout_stderr.get("stderr", "")
-                                        }
-                                        execution_done.set()
-                                        break
-                                    
-                                    stdout = live_stdout_stderr.get("stdout", "")
-                                    stderr = live_stdout_stderr.get("stderr", "")
-                                    
-                                    if stdout != last_displayed["stdout"] or stderr != last_displayed["stderr"]:
-                                        last_displayed["stdout"] = stdout
-                                        last_displayed["stderr"] = stderr
+                                    parsed["value"] = json.loads(args_text)
+                                except json.JSONDecodeError as e:
+                                    parse_error["error"] = ValueError(f"Failed to parse JSON arguments: {str(e)}")
+                                except Exception as e:
+                                    parse_error["error"] = ValueError(f"Unexpected error during argument parsing: {type(e).__name__}: {str(e)}")
 
-                                        # Build the live output renderable as a
-                                        # Group of Text nodes so Rich never
-                                        # parses the actual stdout/stderr bytes
-                                        # as console markup. The previous
-                                        # f-string concat ('output_preview +=
-                                        # f"\n[yellow][STDERR][/yellow]\n..."')
-                                        # crashed whenever the program printed
-                                        # regex literals containing `[/...]`.
-                                        stdout_tail = stdout[-1500:] if len(stdout) > 1500 else stdout
-                                        live_pieces: List[Any] = []
-                                        if stdout_tail:
-                                            live_pieces.append(Text(stdout_tail))
-                                        if stderr:
-                                            stderr_tail = stderr[-500:] if len(stderr) > 500 else stderr
-                                            if live_pieces:
-                                                live_pieces.append(Text(""))
-                                            live_pieces.append(Text("[STDERR]", style="bold yellow"))
-                                            live_pieces.append(Text(stderr_tail))
+                            parse_thread = threading.Thread(target=_parse_args, daemon=True)
+                            parse_thread.start()
+                            # Ensure preparing spinner is visible for a minimum time
+                            MIN_PREPARE_VISIBLE_S = 0.25
+                            while parse_thread.is_alive() or (time.time() - prepare_started_at) < MIN_PREPARE_VISIBLE_S:
+                                time.sleep(0.05)
+                            function_args = parsed.get("value", {})
 
-                                        if live_pieces:
-                                            output_renderable: Any = Group(*live_pieces)
-                                            content = Group(
-                                                Spinner("dots", text=loading_text),
-                                                Text(""),
-                                                Panel(output_renderable, title="[dim]Live Output[/dim]", border_style="dim", padding=(0, 1)),
-                                            )
-                                            live.update(Panel(content, title=panel_title, border_style=panel_style, padding=(0, 1)))
-                                        elif stdout or stderr:
-                                            content = Group(
-                                                Spinner("dots", text=loading_text),
-                                                Text(""),
-                                                Panel(Text.from_markup("[dim]Waiting for output...[/dim]"), title="[dim]Live Output[/dim]", border_style="dim", padding=(0, 1)),
-                                            )
-                                            live.update(Panel(content, title=panel_title, border_style=panel_style, padding=(0, 1)))
-                                    
-                                    # Check if thread is still alive, wait a bit
-                                    if cmd_thread.is_alive():
-                                        execution_done.wait(timeout=0.1)  # Check every 100ms
-                                    else:
-                                        break
-                            except KeyboardInterrupt:
-                                # Interrupt should cancel the tool and roll back the turn (no partial tool tiles/history).
-                                cancel_event.set()
-                                try:
-                                    execution_done.set()
-                                except Exception:
-                                    pass
-                                try:
-                                    cmd_thread.join(timeout=0.5)
-                                except Exception:
-                                    pass
-                                raise
-                            
-                            # Wait for thread to finish (with timeout to prevent hanging)
-                            cmd_thread.join(timeout=max(1.0, command_timeout + 1))
-                            result = result_container.get("result") or {
-                                "success": False,
-                                "error": "Command execution thread did not return result"
-                            }
-                        elif function_name == "manage_todos":
-                            try:
-                                result = self.tool_registry.execute_tool(
-                                    function_name,
-                                    function_args,
-                                    self.todo_manager
+                        try:
+                            if parse_error.get("error") is not None:
+                                prep_title = f"[bold blue]🔧 {escape(str(function_name))}[/bold blue]"
+                                error_panel = Panel(
+                                    f"[red]✗ Failed to parse tool arguments: {escape(str(parse_error['error']))}",
+                                    title=prep_title, border_style="red", padding=(0, 1),
                                 )
-                            except KeyboardInterrupt:
-                                raise
-                        elif function_name == "run_subagent":
-                            try:
-                                subagent_progress_lines: List[str] = []
+                                live.update(error_panel)
+                                result = {"success": False, "error": str(parse_error["error"])}
+                                result_str = json.dumps(result)
+                                self.conversation_history.append({
+                                    "role": "tool",
+                                    "tool_call_id": tool_call["id"],
+                                    "content": result_str
+                                })
+                                # Clean up Live context
+                                try:
+                                    if existing_live_info and existing_live_info.get("live"):
+                                        existing_live_info["live"].stop()
+                                    elif 'live_ctx' in locals():
+                                        live_ctx.__exit__(None, None, None)
+                                except Exception:
+                                    pass
+                                continue
 
-                                def _format_subagent_progress(evt: Dict[str, Any]) -> str:
-                                    # NOTE: every interpolated value is escaped — the subagent
-                                    # message body in particular can contain `[/...]` (regex
-                                    # literals, code snippets) that Rich would otherwise read
-                                    # as an unbalanced closing tag.
-                                    et = (evt or {}).get("type")
-                                    if et == "tool":
-                                        tool_name = escape(str((evt or {}).get("tool_name", "tool")))
-                                        return f"[cyan]Tool:[/cyan] {tool_name}"
-                                    if et == "status":
-                                        st = escape(str((evt or {}).get("status", "")))
-                                        if st:
-                                            return f"[magenta]Status:[/magenta] {st}"
-                                    if et == "message":
-                                        role = escape(str((evt or {}).get("role", "assistant")))
-                                        msg = str((evt or {}).get("content", "")).strip().replace("\n", " ")
-                                        if len(msg) > 120:
-                                            msg = msg[:117] + "..."
-                                        if msg:
-                                            return f"[dim]{role}:[/dim] {escape(msg)}"
-                                    return ""
+                            # Determine loading message based on tool type; update the same tile
+                            # Set loading_text, panel_title, and panel_style for all tools
+                            # Skip if we already set them in the existing_live_info branch
+                            # For write_file, skip loading state entirely - it's too fast
+                            if not existing_live_info and function_name not in ("write_file", "modify_file"):
+                                exec_started_at = time.time()
+                                if function_name == "run_command":
+                                    # Ensure a sane default timeout if the model didn't provide one
+                                    if "timeout" not in function_args:
+                                        function_args["timeout"] = 30
+                                    if "timeout_action" not in function_args:
+                                        function_args["timeout_action"] = "kill"
+                                    # Default working directory to the session cwd if not provided
+                                    if not function_args.get("working_directory"):
+                                        function_args["working_directory"] = self.session_cwd
 
-                                def _subagent_progress_callback(evt: Dict[str, Any]) -> None:
+                                    cmd = function_args.get("command", "")
+                                    display_cmd = cmd if len(cmd) < 50 else cmd[:47] + "..."
+                                    loading_text = f"[cyan]Running:[/cyan] {escape(display_cmd)} [dim](timeout {function_args['timeout']}s)[/dim]"
+                                    panel_title = "[bold blue]⚙️  Run Command[/bold blue]"
+                                    panel_style = "blue"
+                                elif function_name == "read_file":
+                                    loading_text = f"[cyan]Reading:[/cyan] {escape(str(function_args.get('file_path', '')))}"
+                                    panel_title = "[bold blue]📖 Read File[/bold blue]"
+                                    panel_style = "blue"
+                                elif function_name == "list_directory":
+                                    loading_text = f"[cyan]Listing:[/cyan] {escape(str(function_args.get('directory_path', '')))}"
+                                    panel_title = "[bold blue]📁 List Directory[/bold blue]"
+                                    panel_style = "blue"
+                                elif function_name == "write_file":
+                                    loading_text = f"[cyan]Writing:[/cyan] {escape(str(function_args.get('file_path', '')))}"
+                                    panel_title = "[bold blue]📝 Write File[/bold blue]"
+                                    panel_style = "blue"
+                                elif function_name == "manage_todos":
+                                    action = function_args.get("action", "")
+                                    action_verb = {
+                                        "create": "Creating",
+                                        "update": "Updating",
+                                        "list": "Listing",
+                                        "clear": "Clearing"
+                                    }.get(action, action.capitalize())
+                                    loading_text = f"[cyan]{action_verb}:[/cyan] todos"
+                                    panel_title = "[bold cyan]📋 Manage Todos[/bold cyan]"
+                                    panel_style = "cyan"
+                                elif function_name == "web_search":
+                                    loading_text = f"[cyan]Searching:[/cyan] {escape(str(function_args.get('query', ''))[:50])}"
+                                    panel_title = f"[bold blue]🔍 web_search[/bold blue]"
+                                    panel_style = "blue"
+                                else:
+                                    safe_fn2 = escape(str(function_name))
+                                    loading_text = f"[cyan]Executing:[/cyan] {safe_fn2}"
+                                    panel_title = f"[bold blue]🔧 {safe_fn2}[/bold blue]"
+                                    panel_style = "blue"
+
+                                # Update the same tile to the loading state
+                                if live:
+                                    live.update(Panel(Spinner("dots", text=loading_text), title=panel_title, border_style=panel_style, padding=(0, 1)))
+
+                            # Execute the tool while keeping the same tile alive
+                            if function_name == "run_command":
+                                live_stdout_stderr = {"stdout": "", "stderr": ""}
+                                last_displayed = {"stdout": "", "stderr": ""}
+                            
+                                def update_output(stdout: str, stderr: str):
+                                    """Update output state - called from background threads"""
+                                    live_stdout_stderr["stdout"] = stdout
+                                    live_stdout_stderr["stderr"] = stderr
+                            
+                                # Start command execution in background thread
+                                result_container = {"result": None}
+                                execution_done = threading.Event()
+                                cancel_event = threading.Event()  # Event to signal cancellation
+                            
+                                # Get timeout from function_args to enforce it in polling loop
+                                command_timeout = function_args.get("timeout", 30)
+                                start_time = time.time()
+                            
+                                def run_command_thread():
                                     try:
-                                        line = _format_subagent_progress(evt)
-                                        if not line:
-                                            return
-                                        subagent_progress_lines.append(line)
-                                        preview = "\n".join(subagent_progress_lines[-6:])
-                                        if live:
-                                            content = Group(
-                                                Spinner("dots", text=loading_text),
-                                                Text(""),
-                                                Panel(preview or "[dim]Waiting for subagent events...[/dim]", title="[dim]Subagent Progress[/dim]", border_style="dim", padding=(0, 1)),
-                                            )
-                                            live.update(Panel(content, title=panel_title, border_style=panel_style, padding=(0, 1)))
+                                        result_container["result"] = self.tool_registry.execute_tool(
+                                            function_name,
+                                            function_args,
+                                            live_callback=update_output,
+                                            cancel_event=cancel_event
+                                        )
+                                    finally:
+                                        execution_done.set()
+                            
+                                cmd_thread = threading.Thread(target=run_command_thread, daemon=True)
+                                cmd_thread.start()
+                            
+                                # Poll and update display while command runs
+                                try:
+                                    while not execution_done.is_set():
+                                        # Check for timeout - enforce it even if command doesn't
+                                        elapsed = time.time() - start_time
+                                        if elapsed > command_timeout:
+                                            # Timeout exceeded - cancel the command
+                                            cancel_event.set()
+                                            result_container["result"] = {
+                                                "success": False,
+                                                "error": f"Command timed out after {command_timeout}s",
+                                                "stdout": live_stdout_stderr.get("stdout", ""),
+                                                "stderr": live_stdout_stderr.get("stderr", "")
+                                            }
+                                            execution_done.set()
+                                            break
+                                    
+                                        stdout = live_stdout_stderr.get("stdout", "")
+                                        stderr = live_stdout_stderr.get("stderr", "")
+                                    
+                                        if stdout != last_displayed["stdout"] or stderr != last_displayed["stderr"]:
+                                            last_displayed["stdout"] = stdout
+                                            last_displayed["stderr"] = stderr
+
+                                            # Build the live output renderable as a
+                                            # Group of Text nodes so Rich never
+                                            # parses the actual stdout/stderr bytes
+                                            # as console markup. The previous
+                                            # f-string concat ('output_preview +=
+                                            # f"\n[yellow][STDERR][/yellow]\n..."')
+                                            # crashed whenever the program printed
+                                            # regex literals containing `[/...]`.
+                                            stdout_tail = stdout[-1500:] if len(stdout) > 1500 else stdout
+                                            live_pieces: List[Any] = []
+                                            if stdout_tail:
+                                                live_pieces.append(Text(stdout_tail))
+                                            if stderr:
+                                                stderr_tail = stderr[-500:] if len(stderr) > 500 else stderr
+                                                if live_pieces:
+                                                    live_pieces.append(Text(""))
+                                                live_pieces.append(Text("[STDERR]", style="bold yellow"))
+                                                live_pieces.append(Text(stderr_tail))
+
+                                            if live_pieces:
+                                                output_renderable: Any = Group(*live_pieces)
+                                                content = Group(
+                                                    Spinner("dots", text=loading_text),
+                                                    Text(""),
+                                                    Panel(output_renderable, title="[dim]Live Output[/dim]", border_style="dim", padding=(0, 1)),
+                                                )
+                                                live.update(Panel(content, title=panel_title, border_style=panel_style, padding=(0, 1)))
+                                            elif stdout or stderr:
+                                                content = Group(
+                                                    Spinner("dots", text=loading_text),
+                                                    Text(""),
+                                                    Panel(Text.from_markup("[dim]Waiting for output...[/dim]"), title="[dim]Live Output[/dim]", border_style="dim", padding=(0, 1)),
+                                                )
+                                                live.update(Panel(content, title=panel_title, border_style=panel_style, padding=(0, 1)))
+                                    
+                                        # Check if thread is still alive, wait a bit
+                                        if cmd_thread.is_alive():
+                                            execution_done.wait(timeout=0.1)  # Check every 100ms
+                                        else:
+                                            break
+                                except KeyboardInterrupt:
+                                    # Interrupt should cancel the tool and roll back the turn (no partial tool tiles/history).
+                                    cancel_event.set()
+                                    try:
+                                        execution_done.set()
                                     except Exception:
                                         pass
+                                    try:
+                                        cmd_thread.join(timeout=0.5)
+                                    except Exception:
+                                        pass
+                                    raise
+                            
+                                # Wait for thread to finish (with timeout to prevent hanging)
+                                cmd_thread.join(timeout=max(1.0, command_timeout + 1))
+                                result = result_container.get("result") or {
+                                    "success": False,
+                                    "error": "Command execution thread did not return result"
+                                }
+                            elif function_name == "manage_todos":
+                                try:
+                                    result = self.tool_registry.execute_tool(
+                                        function_name,
+                                        function_args,
+                                        self.todo_manager
+                                    )
+                                except KeyboardInterrupt:
+                                    raise
+                            elif function_name == "run_subagent":
+                                try:
+                                    subagent_progress_lines: List[str] = []
 
-                                exec_args = dict(function_args)
-                                exec_args["_progress_callback"] = _subagent_progress_callback
-                                result = self.tool_registry.execute_tool(
-                                    function_name,
-                                    exec_args,
-                                    self._run_subagent
-                                )
-                            except KeyboardInterrupt:
-                                raise
-                        elif function_name == "run_subagent_async":
-                            try:
-                                result = self.tool_registry.execute_tool(
-                                    function_name,
-                                    function_args,
-                                    self._run_subagent_async
-                                )
-                            except KeyboardInterrupt:
-                                raise
-                        elif function_name == "poll_subagent":
-                            try:
-                                result = self.tool_registry.execute_tool(
-                                    function_name,
-                                    function_args,
-                                    self._poll_subagent
-                                )
-                            except KeyboardInterrupt:
-                                raise
-                        elif function_name == "list_subagents":
-                            try:
-                                result = self.tool_registry.execute_tool(
-                                    function_name,
-                                    function_args,
-                                    self._list_subagents
-                                )
-                            except KeyboardInterrupt:
-                                raise
-                        elif function_name == "cancel_subagent_job":
-                            try:
-                                result = self.tool_registry.execute_tool(
-                                    function_name,
-                                    function_args,
-                                    self._cancel_subagent_job
-                                )
-                            except KeyboardInterrupt:
-                                raise
-                        elif function_name == "write_file":
-                            # Validate write_file arguments before execution to prevent empty content issues
-                            if "content" not in function_args:
-                                result = {
-                                    "success": False,
-                                    "error": f"write_file requires 'content' parameter. Received keys: {list(function_args.keys())}"
-                                }
-                            elif function_args.get("content") is None:
-                                result = {
-                                    "success": False,
-                                    "error": "write_file 'content' parameter cannot be None"
-                                }
-                            elif isinstance(function_args.get("content"), str) and len(function_args.get("content", "")) == 0:
-                                result = {
-                                    "success": False,
-                                    "error": "write_file 'content' parameter is empty. Please provide the actual file content."
-                                }
+                                    def _format_subagent_progress(evt: Dict[str, Any]) -> str:
+                                        # NOTE: every interpolated value is escaped — the subagent
+                                        # message body in particular can contain `[/...]` (regex
+                                        # literals, code snippets) that Rich would otherwise read
+                                        # as an unbalanced closing tag.
+                                        et = (evt or {}).get("type")
+                                        if et == "tool":
+                                            tool_name = escape(str((evt or {}).get("tool_name", "tool")))
+                                            return f"[cyan]Tool:[/cyan] {tool_name}"
+                                        if et == "status":
+                                            st = escape(str((evt or {}).get("status", "")))
+                                            if st:
+                                                return f"[magenta]Status:[/magenta] {st}"
+                                        if et == "message":
+                                            role = escape(str((evt or {}).get("role", "assistant")))
+                                            msg = str((evt or {}).get("content", "")).strip().replace("\n", " ")
+                                            if len(msg) > 120:
+                                                msg = msg[:117] + "..."
+                                            if msg:
+                                                return f"[dim]{role}:[/dim] {escape(msg)}"
+                                        return ""
+
+                                    def _subagent_progress_callback(evt: Dict[str, Any]) -> None:
+                                        try:
+                                            line = _format_subagent_progress(evt)
+                                            if not line:
+                                                return
+                                            subagent_progress_lines.append(line)
+                                            preview = "\n".join(subagent_progress_lines[-6:])
+                                            if live:
+                                                content = Group(
+                                                    Spinner("dots", text=loading_text),
+                                                    Text(""),
+                                                    Panel(preview or "[dim]Waiting for subagent events...[/dim]", title="[dim]Subagent Progress[/dim]", border_style="dim", padding=(0, 1)),
+                                                )
+                                                live.update(Panel(content, title=panel_title, border_style=panel_style, padding=(0, 1)))
+                                        except Exception:
+                                            pass
+
+                                    exec_args = dict(function_args)
+                                    exec_args["_progress_callback"] = _subagent_progress_callback
+                                    result = self.tool_registry.execute_tool(
+                                        function_name,
+                                        exec_args,
+                                        self._run_subagent
+                                    )
+                                except KeyboardInterrupt:
+                                    raise
+                            elif function_name == "run_subagent_async":
+                                try:
+                                    result = self.tool_registry.execute_tool(
+                                        function_name,
+                                        function_args,
+                                        self._run_subagent_async
+                                    )
+                                except KeyboardInterrupt:
+                                    raise
+                            elif function_name == "poll_subagent":
+                                try:
+                                    result = self.tool_registry.execute_tool(
+                                        function_name,
+                                        function_args,
+                                        self._poll_subagent
+                                    )
+                                except KeyboardInterrupt:
+                                    raise
+                            elif function_name == "list_subagents":
+                                try:
+                                    result = self.tool_registry.execute_tool(
+                                        function_name,
+                                        function_args,
+                                        self._list_subagents
+                                    )
+                                except KeyboardInterrupt:
+                                    raise
+                            elif function_name == "cancel_subagent_job":
+                                try:
+                                    result = self.tool_registry.execute_tool(
+                                        function_name,
+                                        function_args,
+                                        self._cancel_subagent_job
+                                    )
+                                except KeyboardInterrupt:
+                                    raise
+                            elif function_name == "write_file":
+                                # Validate write_file arguments before execution to prevent empty content issues
+                                if "content" not in function_args:
+                                    result = {
+                                        "success": False,
+                                        "error": f"write_file requires 'content' parameter. Received keys: {list(function_args.keys())}"
+                                    }
+                                elif function_args.get("content") is None:
+                                    result = {
+                                        "success": False,
+                                        "error": "write_file 'content' parameter cannot be None"
+                                    }
+                                elif isinstance(function_args.get("content"), str) and len(function_args.get("content", "")) == 0:
+                                    result = {
+                                        "success": False,
+                                        "error": "write_file 'content' parameter is empty. Please provide the actual file content."
+                                    }
+                                else:
+                                    # Content is present and non-empty, proceed with execution
+                                    try:
+                                        result = self.tool_registry.execute_tool(
+                                            function_name,
+                                            function_args
+                                        )
+                                    except KeyboardInterrupt:
+                                        raise
                             else:
-                                # Content is present and non-empty, proceed with execution
                                 try:
                                     result = self.tool_registry.execute_tool(
                                         function_name,
@@ -7794,222 +9531,215 @@ You are designed for continuous autonomous operation. "No user input" does not m
                                     )
                                 except KeyboardInterrupt:
                                     raise
-                        else:
+
+                            # Update the same tile to final state - keep it persistent
+                            # Note: write_file is handled earlier and skipped with continue, so this is for other tools
+                            # For other tools, ensure loading state is visible briefly
+                            MIN_LOADING_VISIBLE_S = 0.15
+                            elapsed_loading = time.time() - exec_started_at
+                            if elapsed_loading < MIN_LOADING_VISIBLE_S:
+                                time.sleep(MIN_LOADING_VISIBLE_S - elapsed_loading)
+                        
+                            # Create final panel BEFORE updating Live context
+                            if function_name == "manage_todos":
+                                final_panel = self._create_todos_result_panel(function_args, result)
+                            else:
+                                final_panel = self._create_result_panel(function_name, function_args, result)
+                        
+                            # Update Live context with result immediately - same tile persists, just text changes
+                            live.update(final_panel)
+                        
+                            # Ensure update is rendered
+                            sys.stdout.flush()
+                        
+                            # Finalize the tile in place (avoids orphan borders from double-stop).
                             try:
-                                result = self.tool_registry.execute_tool(
-                                    function_name,
-                                    function_args
-                                )
-                            except KeyboardInterrupt:
-                                raise
-
-                        # Update the same tile to final state - keep it persistent
-                        # Note: write_file is handled earlier and skipped with continue, so this is for other tools
-                        # For other tools, ensure loading state is visible briefly
-                        MIN_LOADING_VISIBLE_S = 0.15
-                        elapsed_loading = time.time() - exec_started_at
-                        if elapsed_loading < MIN_LOADING_VISIBLE_S:
-                            time.sleep(MIN_LOADING_VISIBLE_S - elapsed_loading)
-                        
-                        # Create final panel BEFORE updating Live context
-                        if function_name == "manage_todos":
-                            final_panel = self._create_todos_result_panel(function_args, result)
-                        else:
-                            final_panel = self._create_result_panel(function_name, function_args, result)
-                        
-                        # Update Live context with result immediately - same tile persists, just text changes
-                        live.update(final_panel)
-                        
-                        # Ensure update is rendered
-                        sys.stdout.flush()
-                        
-                        # Stop the Live context
-                        try:
-                            if existing_live_info and existing_live_info.get("live"):
-                                existing_live_info["live"].stop()
-                            elif 'live_ctx' in locals():
-                                live_ctx.__exit__(None, None, None)
-                        except Exception:
-                            pass
-
-                        # Prepare any additional panels to render AFTER the tile finishes
-                        extra_stdout = result.get("stdout") if function_name == "run_command" else None
-                        extra_stderr = result.get("stderr") if function_name == "run_command" else None
-
-                        # If this was a run_command that changed directory (leading 'cd <dir> &&'), persist new cwd
-                        if function_name == "run_command":
-                            try:
-                                import re
-                                cmd = function_args.get("command", "")
-                                cd_match = re.match(r"^\s*cd\s+([^&;]+)\s*&&", cmd)
-                                if cd_match:
-                                    target = cd_match.group(1).strip()
-                                    # Resolve against prior session_cwd
-                                    if not os.path.isabs(target):
-                                        new_dir = os.path.normpath(os.path.join(self.session_cwd, target))
-                                    else:
-                                        new_dir = os.path.normpath(target)
-                                    # Ensure it's a valid directory
-                                    if os.path.isdir(new_dir):
-                                        self.session_cwd = new_dir
+                                if existing_live_info and existing_live_info.get("live"):
+                                    self._release_tool_live(tool_call_id, tool_call_live_map, existing_live_info["live"])
+                                elif 'live_ctx' in locals():
+                                    self._release_tool_live(tool_call_id, tool_call_live_map, live_ctx)
+                                elif 'live' in locals() and live:
+                                    self._release_tool_live(tool_call_id, tool_call_live_map, live)
                             except Exception:
                                 pass
 
-                        # Minimize payload stored in conversation to avoid context bloat.
-                        # Uses a token-budget fraction of the overall context window (see _minimize_tool_result).
-                        minimized = self._minimize_tool_result(function_name, result)
-                        result_str = json.dumps(minimized)
-                    except KeyboardInterrupt:
-                        # User interrupted - clean up ALL Live contexts immediately
-                        try:
-                            # Clean up the current tool's Live context
-                            if existing_live_info and existing_live_info.get("live"):
-                                self._delete_live_tile(existing_live_info.get("live"), pause=0.02)
-                            elif 'live_ctx' in locals():
-                                self._delete_live_tile(live_ctx, pause=0.02)
-                            elif 'live' in locals() and live:
-                                self._delete_live_tile(live, pause=0.02)
-                        except Exception:
-                            pass
-                        
-                        # CRITICAL: Clean up ALL remaining tool call Live contexts
-                        try:
-                            for tool_call_id, live_info in tool_call_live_map.items():
-                                if live_info and live_info.get("live"):
-                                    try:
-                                        self._delete_live_tile(live_info.get("live"), pause=0.01)
-                                    except Exception:
-                                        pass
-                        except Exception:
-                            pass
+                            # Prepare any additional panels to render AFTER the tile finishes
+                            extra_stdout = result.get("stdout") if function_name == "run_command" else None
+                            extra_stderr = result.get("stderr") if function_name == "run_command" else None
 
-                        # Global safety-net cleanup for any Live contexts that escaped local refs.
-                        try:
-                            self._hard_cleanup_live_interrupt()
-                        except Exception:
-                            pass
-                        
-                        # Clean up thinking Live context if still active
-                        try:
-                            if 'current_thinking_live' in locals() and current_thinking_live:
+                            # If this was a run_command that changed directory (leading 'cd <dir> &&'), persist new cwd
+                            if function_name == "run_command":
                                 try:
-                                    self._delete_live_tile(current_thinking_live, pause=0.02)
+                                    import re
+                                    cmd = function_args.get("command", "")
+                                    cd_match = re.match(r"^\s*cd\s+([^&;]+)\s*&&", cmd)
+                                    if cd_match:
+                                        target = cd_match.group(1).strip()
+                                        # Resolve against prior session_cwd
+                                        if not os.path.isabs(target):
+                                            new_dir = os.path.normpath(os.path.join(self.session_cwd, target))
+                                        else:
+                                            new_dir = os.path.normpath(target)
+                                        # Ensure it's a valid directory
+                                        if os.path.isdir(new_dir):
+                                            self.session_cwd = new_dir
                                 except Exception:
                                     pass
-                        except Exception:
-                            pass
+
+                            # Minimize payload stored in conversation to avoid context bloat.
+                            # Uses a token-budget fraction of the overall context window (see _minimize_tool_result).
+                            minimized = self._minimize_tool_result(function_name, result)
+                            result_str = json.dumps(minimized)
+                        except KeyboardInterrupt:
+                            # User interrupted - finalize active Live contexts in place.
+                            # Deleting a Live tile during a fast render can erase only
+                            # part of its border; finalizing preserves a complete tile
+                            # before the interrupt banner is printed.
+                            try:
+                                if existing_live_info and existing_live_info.get("live"):
+                                    self._finalize_live_in_place(existing_live_info.get("live"))
+                                elif 'live_ctx' in locals():
+                                    self._finalize_live_in_place(live_ctx)
+                                elif 'live' in locals() and live:
+                                    self._finalize_live_in_place(live)
+                            except Exception:
+                                pass
                         
-                        # Roll back to the last committed checkpoint so we only drop the in-flight tool tile.
-                        try:
-                            if isinstance(commit_checkpoint_len, int) and commit_checkpoint_len >= 0:
-                                self.conversation_history = (self.conversation_history or [])[:commit_checkpoint_len]
-                        except Exception:
-                            pass
-                        try:
-                            sys.stdout.write("\n⚠️  Tool execution cancelled. You can enter a new message.\n")
-                            sys.stdout.flush()
-                        except Exception:
-                            pass
-                        # Tell the outer Ctrl-C handler to skip its own "Response cancelled"
-                        # banner — we've already shown the more specific one here.
-                        try:
-                            self._cancel_notice_shown = True
-                        except Exception:
-                            pass
-                        # Flush and pause to ensure all Live contexts are cleared
-                        try:
-                            sys.stdout.flush()
-                            sys.stderr.flush()
-                            time.sleep(0.1)  # Pause to ensure cleanup completes
-                        except Exception:
-                            pass
-                        # Re-raise so outer handlers return to the input prompt cleanly.
-                        raise
-                    except Exception as e:
-                        result_str = json.dumps({"error": str(e)})
-                        console.print(f"[red]✗ Error executing {function_name}: {escape(str(e))}[/red]")
-                        # Stop Live context on error too
-                        try:
-                            if existing_live_info and existing_live_info.get("live"):
-                                existing_live_info["live"].stop()
-                            elif 'live_ctx' in locals():
-                                live_ctx.__exit__(None, None, None)
-                        except Exception:
-                            pass
+                            # CRITICAL: finalize ALL remaining tool call Live contexts
+                            try:
+                                for tool_call_id, live_info in tool_call_live_map.items():
+                                    if live_info and live_info.get("live"):
+                                        try:
+                                            self._finalize_live_in_place(live_info.get("live"))
+                                        except Exception:
+                                            pass
+                            except Exception:
+                                pass
+
+                            # Clean up thinking Live context if still active
+                            try:
+                                if 'current_thinking_live' in locals() and current_thinking_live:
+                                    try:
+                                        self._finalize_live_in_place(current_thinking_live)
+                                    except Exception:
+                                        pass
+                            except Exception:
+                                pass
+                        
+                            # Roll back to the last committed checkpoint so we only drop the in-flight tool tile.
+                            try:
+                                if isinstance(commit_checkpoint_len, int) and commit_checkpoint_len >= 0:
+                                    self.conversation_history = (self.conversation_history or [])[:commit_checkpoint_len]
+                            except Exception:
+                                pass
+                            try:
+                                reason = getattr(self, "_interrupt_reason", "") or "Tool execution cancelled"
+                                if reason == "Interrupted by /alert":
+                                    self._print_interrupt_panel(reason="Interrupted by /alert")
+                                else:
+                                    self._print_interrupt_panel(reason="Tool execution cancelled")
+                            except Exception:
+                                pass
+                            # Tell the outer Ctrl-C handler to skip its own "Response cancelled"
+                            # banner — we've already shown the more specific one here.
+                            try:
+                                self._cancel_notice_shown = True
+                            except Exception:
+                                pass
+                            # Flush and pause to ensure all Live contexts are cleared
+                            try:
+                                sys.stdout.flush()
+                                sys.stderr.flush()
+                                time.sleep(0.1)  # Pause to ensure cleanup completes
+                            except Exception:
+                                pass
+                            # Re-raise so outer handlers return to the input prompt cleanly.
+                            raise
+                        except Exception as e:
+                            result_str = json.dumps({"error": str(e)})
+                            console.print(f"[red]✗ Error executing {function_name}: {escape(str(e))}[/red]")
+                            # Stop Live context on error too
+                            try:
+                                if existing_live_info and existing_live_info.get("live"):
+                                    existing_live_info["live"].stop()
+                                elif 'live_ctx' in locals():
+                                    live_ctx.__exit__(None, None, None)
+                            except Exception:
+                                pass
                     
-                    # Add tool result to history
-                    self.conversation_history.append({
-                        "role": "tool",
-                        "tool_call_id": tool_call["id"],
-                        "content": result_str
-                    })
-                    # Record per-tool stats so /wrap has something to show.
-                    try:
-                        self._record_tool_use(function_name, function_args, result)
-                    except Exception:
-                        pass
-                    # Commit: this tool result is complete and should survive future Ctrl+C interruptions.
-                    try:
-                        commit_checkpoint_len = len(self.conversation_history)
-                    except Exception:
-                        pass
-                    # Durable checkpoint (crash recovery).
-                    try:
-                        self._checkpoint_session(force=True)
-                    except Exception:
-                        pass
+                        # Add tool result to history
+                        self.conversation_history.append({
+                            "role": "tool",
+                            "tool_call_id": tool_call["id"],
+                            "content": result_str
+                        })
+                        # Record per-tool stats so /wrap has something to show.
+                        try:
+                            self._record_tool_use(function_name, function_args, result)
+                        except Exception:
+                            pass
+                        # Commit: this tool result is complete and should survive future Ctrl+C interruptions.
+                        try:
+                            commit_checkpoint_len = len(self.conversation_history)
+                        except Exception:
+                            pass
+                        # Durable checkpoint (crash recovery).
+                        try:
+                            self._checkpoint_session(force=True)
+                        except Exception:
+                            pass
 
-                    # Display additional result info for specific tools (AFTER the tile)
-                    if function_name == "manage_todos":
-                        self.display_todos()
-                    elif function_name == "run_command":
-                        # IMPORTANT: stdout/stderr is untrusted text. Wrap it in a
-                        # plain Text node so Rich does NOT try to parse `[...]`
-                        # sequences (regex literals, JSON-with-square-brackets, log
-                        # tokens, etc.) as console markup. A previous bug surfaced
-                        # as `closing tag '[/...]' doesn't match any open tag`.
-                        if extra_stdout is not None and extra_stdout != "":
-                            console.print(Panel(
-                                Text(str(extra_stdout)),
-                                title="[green]Output[/green]",
-                                border_style="green", padding=(0, 1),
-                            ))
+                        # Display additional result info for specific tools (AFTER the tile)
+                        if function_name == "manage_todos":
+                            self.display_todos()
+                        elif function_name == "run_command":
+                            # IMPORTANT: stdout/stderr is untrusted text. Wrap it in a
+                            # plain Text node so Rich does NOT try to parse `[...]`
+                            # sequences (regex literals, JSON-with-square-brackets, log
+                            # tokens, etc.) as console markup. A previous bug surfaced
+                            # as `closing tag '[/...]' doesn't match any open tag`.
+                            if extra_stdout is not None and extra_stdout != "":
+                                console.print(Panel(
+                                    Text(str(extra_stdout)),
+                                    title="[green]Output[/green]",
+                                    border_style="green", padding=(0, 1),
+                                ))
 
-                        if extra_stderr is not None and extra_stderr != "":
-                            was_success = result.get("success", False)
-                            label = "[dim]stderr[/dim]" if was_success else "[red]Error[/red]"
-                            style = "dim" if was_success else "red"
-                            console.print(Panel(
-                                Text(str(extra_stderr)),
-                                title=label,
-                                border_style=style, padding=(0, 1),
-                            ))
+                            if extra_stderr is not None and extra_stderr != "":
+                                was_success = result.get("success", False)
+                                label = "[dim]stderr[/dim]" if was_success else "[red]Error[/red]"
+                                style = "dim" if was_success else "red"
+                                console.print(Panel(
+                                    Text(str(extra_stderr)),
+                                    title=label,
+                                    border_style=style, padding=(0, 1),
+                                ))
 
-                        error_msg = result.get("error")
-                        if error_msg and (not extra_stderr or extra_stderr == ""):
-                            console.print(Panel(
-                                Text(str(error_msg)),
-                                title="[red]Error[/red]",
-                                border_style="red", padding=(0, 1),
-                            ))
+                            error_msg = result.get("error")
+                            if error_msg and (not extra_stderr or extra_stderr == ""):
+                                console.print(Panel(
+                                    Text(str(error_msg)),
+                                    title="[red]Error[/red]",
+                                    border_style="red", padding=(0, 1),
+                                ))
 
-                        note_msg = result.get("note")
-                        pid = result.get("pid")
-                        if note_msg:
-                            # `note` comes from our own tool, but be defensive: pass
-                            # the prose as Text and only the small PID suffix as
-                            # markup so a future tool tweak can't reintroduce the bug.
-                            note_renderable: Any = Text(str(note_msg), style="cyan")
-                            if pid:
-                                note_renderable = Group(
+                            note_msg = result.get("note")
+                            pid = result.get("pid")
+                            if note_msg:
+                                # `note` comes from our own tool, but be defensive: pass
+                                # the prose as Text and only the small PID suffix as
+                                # markup so a future tool tweak can't reintroduce the bug.
+                                note_renderable: Any = Text(str(note_msg), style="cyan")
+                                if pid:
+                                    note_renderable = Group(
+                                        note_renderable,
+                                        Text(f"PID: {pid}", style="dim"),
+                                    )
+                                console.print(Panel(
                                     note_renderable,
-                                    Text(f"PID: {pid}", style="dim"),
-                                )
-                            console.print(Panel(
-                                note_renderable,
-                                title="[blue]Info[/blue]",
-                                border_style="blue", padding=(0, 1),
-                            ))
+                                    title="[blue]Info[/blue]",
+                                    border_style="blue", padding=(0, 1),
+                                ))
                     
                     # Show thinking animation before next iteration
                     console.print()
@@ -8018,11 +9748,10 @@ You are designed for continuous autonomous operation. "No user input" does not m
                     # This prevents terminal state issues that can freeze input
                     # Clean up all tool call Live contexts first
                     try:
-                        for tool_call_id, live_info in tool_call_live_map.items():
+                        for tc_id, live_info in list(tool_call_live_map.items()):
                             if live_info and live_info.get("live"):
                                 try:
-                                    live_info["live"].stop()
-                                    live_info["live"].__exit__(None, None, None)
+                                    self._release_tool_live(tc_id, tool_call_live_map, live_info.get("live"))
                                 except Exception:
                                     pass
                     except Exception:
@@ -8099,7 +9828,7 @@ You are designed for continuous autonomous operation. "No user input" does not m
                     # "reasoning_content must be passed back" rejection.
                     assistant_final_msg: Dict[str, Any] = {
                         "role": "assistant",
-                        "content": display_content or "",
+                        "content": content or "",
                         "reasoning_content": reasoning_content or "",
                     }
                     self.conversation_history.append(assistant_final_msg)
@@ -8113,32 +9842,9 @@ You are designed for continuous autonomous operation. "No user input" does not m
                         self._checkpoint_session(force=True)
                     except Exception:
                         pass
-                    
                     # Log this complete turn for fine-tuning
                     self._save_conversation_turn(user_message)
 
-                    # POST-COMPACTION STALL GUARD: if the conversation was just compacted
-                    # and the model replied with text but no tool_calls, retry once with a
-                    # stronger directive to force a tool call.
-                    if (self._is_post_compaction_turn()
-                            and not _post_compaction_retried):
-                        _post_compaction_retried = True
-                        retry_msg = (
-                            "[SYSTEM AUTO-INJECTED — the user did NOT type this]\n"
-                            "You just responded with text but NO tool call. "
-                            "The conversation was just compacted — you are mid-task. "
-                            "Re-read the compacted context above and call the tool you need next. "
-                            "Do NOT summarize. Call a tool NOW.\n"
-                        )
-                        self.conversation_history.append({
-                            "role": "user",
-                            "content": retry_msg,
-                            "meta": {"auto_injected": True, "kind": "post_compaction_retry"},
-                        })
-                        console.print("[dim]🔄 Post-compaction stall detected — retrying with stronger directive[/dim]")
-                        continue
-
-                    # Ensure all Live contexts are stopped before returning to input loop
                     # This prevents terminal state issues that can freeze input
                     try:
                         sys.stdout.flush()
@@ -8238,7 +9944,9 @@ You are designed for continuous autonomous operation. "No user input" does not m
                 # Print the explicit "Interrupted" panel below the partial
                 # output so the user has a clear visual marker.
                 try:
-                    self._print_interrupt_panel()
+                    self._print_interrupt_panel(
+                        reason=getattr(self, "_interrupt_reason", "") or "Cancelled by user (Ctrl+C)"
+                    )
                 except Exception:
                     pass
 
@@ -8276,6 +9984,12 @@ You are designed for continuous autonomous operation. "No user input" does not m
                         pass
                     try:
                         active_live.__exit__(None, None, None)
+                    except Exception:
+                        pass
+                    # Force-detach from console even if cleanup above was a no-op
+                    # (prevents overlapping spinner borders on Ctrl+C restart).
+                    try:
+                        setattr(console, "_live", None)
                     except Exception:
                         pass
             except Exception:
@@ -8397,11 +10111,19 @@ You are designed for continuous autonomous operation. "No user input" does not m
             "[cyan]•[/cyan] [bold white]/todos[/bold white]  view todos\n"
             "\n"
             "[dim]Sessions[/dim]\n"
-            "[cyan]•[/cyan] [bold white]sweet resume[/bold white]\n"
-            "[cyan]•[/cyan] [bold white]sweet start --session {sessionid}[/bold white]\n"
+            "[cyan]•[/cyan] [bold white]sweet resume[/bold white]  ↑/↓ menu to pick a session\n"
+            "[cyan]•[/cyan] [bold white]/resume[/bold white]  resume a saved session in this shell\n"
             "[cyan]•[/cyan] [bold white]/workfor 45m[/bold white]  autopilot for 45m\n"
             "[cyan]•[/cyan] [bold white]/workoff[/bold white]  stop autopilot\n"
             "[cyan]•[/cyan] [bold white]/jobs[/bold white]  list background jobs\n"
+            "\n"
+            "[dim]Messaging[/dim]\n"
+            "[cyan]•[/cyan] type anytime — plain text queues as your next prompt (runs when the turn ends)\n"
+            "[cyan]•[/cyan] [bold white]/queue[/bold white]  view queued prompts\n"
+            "[cyan]•[/cyan] [bold white]/inbox <msg>[/bold white]  send to inbox + notify the agent\n"
+            "[cyan]•[/cyan] [bold white]/alert <msg>[/bold white]  deliver to inbox + notify the agent\n"
+            "[cyan]•[/cyan] [bold white]/msg <id> <text>[/bold white]  message a running agent's thread\n"
+            "[cyan]•[/cyan] [bold white]/threads[/bold white]  browse message threads\n"
         )
         def _build_header_text(*, phase: int = 0, animate_all: bool = False) -> Text:
             """
@@ -8542,19 +10264,50 @@ You are designed for continuous autonomous operation. "No user input" does not m
             self._arm_autopilot_if_possible()
         except Exception:
             pass
-        
+
+        # Persistent input: capture typing at any time (mid-turn lines go to the
+        # agent's inbox; idle lines become the next prompt).
+        try:
+            self._start_stdin_reader()
+        except Exception:
+            pass
+
         while True:
             try:
                 # If autopilot is active (continuous work), inject a follow-up prompt instead of waiting for input.
                 auto_injected = False
                 now_ts = time.time()
                 user_input = None
+
+                # A line typed mid-turn (queued by the stdin reader) always takes
+                # priority — even over autopilot — so the input bar stays first-class.
+                pending_line = self._pop_pending_input()
+                if pending_line is not None and pending_line.strip():
+                    user_input = pending_line
+                    auto_injected = False
+                    # Always echo the queued message into conversation so the user
+                    # sees it as a normal You tile when the turn finishes.
+                    _bar = getattr(self, "_pinned_bar", None)
+                    try:
+                        console.print(
+                            Panel(
+                                Text("You", style="bold yellow"),
+                                border_style="yellow",
+                                padding=(0, 1),
+                                expand=False,
+                            )
+                        )
+                        console.print(f"[bold yellow]›[/bold yellow] {escape(pending_line.strip())}")
+                    except Exception:
+                        pass
+
                 try:
                     # Autopilot is "armed" until the first real user prompt arrives.
                     # The only exception is resume: _arm_autopilot_if_possible() will set _continuous_started_ts
                     # when there is prior user history, allowing immediate continuation after resume.
                     if (
-                        (self._continuous_started_ts is not None)
+                        user_input is None
+                        and (self._continuous_started_ts is not None)
                         and (
                         (self.continuous_work_seconds == -1)
                         or (
@@ -8617,43 +10370,63 @@ You are designed for continuous autonomous operation. "No user input" does not m
                 except Exception:
                     pass
                 
-                # Use Rich's console.input() for proper terminal state management
-                # Rich handles ANSI codes correctly and works well with Live contexts
                 try:
                     if user_input is None:
-                        # After an interrupt, terminal input can still contain a buffered keystroke
-                        # that would render before the next prompt box (e.g. "t╭─────╮").
+                        _bar = getattr(self, "_pinned_bar", None)
+                        _bar_active = bool(_bar and _bar._active)
+
                         if flush_input_once:
                             try:
-                                import termios
-                                termios.tcflush(sys.stdin.fileno(), termios.TCIFLUSH)
+                                if not _bar_active:
+                                    import termios
+                                    termios.tcflush(sys.stdin.fileno(), termios.TCIFLUSH)
                             except Exception:
                                 pass
                             flush_input_once = False
 
-                        # Ensure we start prompt rendering from a fresh line boundary.
-                        try:
-                            sys.stdout.write("\n")
-                            sys.stdout.flush()
-                        except Exception:
-                            pass
-
-                        # Match tool/reasoning tile styling: put the "You" label inside a bordered Panel,
-                        # and keep the panel only as wide as the text.
-                        console.print(
-                            Panel(
-                                Text("You", style="bold yellow"),
-                                border_style="yellow",
-                                padding=(0, 1),
-                                expand=False,
+                        if not _bar_active:
+                            # Fallback (no pinned bar): print prompt inline
+                            try:
+                                sys.stdout.write("\n")
+                                sys.stdout.flush()
+                            except Exception:
+                                pass
+                            console.print(
+                                Panel(
+                                    Text("You", style="bold yellow"),
+                                    border_style="yellow",
+                                    padding=(0, 1),
+                                    expand=False,
+                                )
                             )
-                        )
-                        user_input = console.input("[bold yellow]›[/bold yellow] ")
+                            console.print("[bold yellow]›[/bold yellow] ", end="")
+
+                        # Block on the queue (pinned bar feeds it on Enter)
+                        user_input = self._read_user_line()
+
+                        if (
+                            _bar_active
+                            and user_input is not None
+                            and not isinstance(_bar, PromptInputBar)
+                        ):
+                            # Echo the confirmed input above the bar for fallback/legacy
+                            # input bars. prompt_toolkit already shows the submitted
+                            # line, so echoing it here duplicates the user's input.
+                            console.print(
+                                Panel(
+                                    Text("You", style="bold yellow"),
+                                    border_style="yellow",
+                                    padding=(0, 1),
+                                    expand=False,
+                                )
+                            )
+                            console.print(f"[bold yellow]›[/bold yellow] {escape(str(user_input).strip())}")
                 except KeyboardInterrupt:
                     # Ctrl-C at input prompt - check if this is a second Ctrl-C
                     current_time = time.time()
                     if last_interrupt_time > 0 and (current_time - last_interrupt_time) < interrupt_threshold:
                         # Second Ctrl-C - exit immediately
+                        self._prepare_terminal_for_visible_save()
                         self.save_session()
                         try:
                             sys.stdout.write("\nGoodbye! 👋\n")
@@ -8756,6 +10529,11 @@ You are designed for continuous autonomous operation. "No user input" does not m
                 lower = user_input.lower()
 
                 # Autopilot commands
+                if lower == "/resume" or lower.startswith("/resume "):
+                    arg = user_input[len("/resume"):].strip()
+                    self.resume_session_interactive(arg)
+                    continue
+
                 if lower.startswith("/workfor "):
                     spec = user_input[len("/workfor "):].strip()
                     secs = _parse_duration_seconds(spec)
@@ -8808,6 +10586,7 @@ You are designed for continuous autonomous operation. "No user input" does not m
                     continue
                 
                 if lower in ["exit", "quit"]:
+                    self._prepare_terminal_for_visible_save()
                     self.save_session()
                     console.print("[cyan]Goodbye! 👋[/cyan]")
                     break
@@ -8891,6 +10670,109 @@ You are designed for continuous autonomous operation. "No user input" does not m
                     self.conversation_summary = ""
                     console.print("[green]✓ Conversation history cleared[/green]")
                     continue
+
+                if lower == "/queue":
+                    self.display_prompt_queue()
+                    continue
+                if lower == "/queue clear":
+                    self.clear_prompt_queue()
+                    continue
+
+                # Messaging thread commands
+                if lower == "/inbox":
+                    console.print("[dim]Usage: /inbox <message>[/dim]")
+                    self.display_threads()
+                    continue
+                if lower.startswith("/inbox "):
+                    text = user_input[len("/inbox "):].strip()
+                    if not text:
+                        console.print("[red]Usage: /inbox <message>[/red]")
+                    elif self._post_inbox_message(text, alert=False):
+                        console.print("[green]✓[/green] Sent to inbox. The agent was notified and can call check_messages when ready.")
+                    else:
+                        console.print("[red]✗ Inbox send failed (messaging unavailable?)[/red]")
+                    continue
+                if lower == "/threads" or lower == "/read":
+                    # Bare command → pick a thread with arrow keys, then open it.
+                    tid = self._pick_thread("Threads — pick one to read")
+                    if tid is not None:
+                        self.display_thread_messages(tid)
+                    continue
+                if lower.startswith("/read "):
+                    arg = user_input[len("/read "):].strip().lstrip("#")
+                    if not arg.isdigit():
+                        console.print("[red]Usage: /read [thread_id]  (or just /read to pick from a menu)[/red]")
+                    else:
+                        self.display_thread_messages(int(arg))
+                    continue
+                if lower == "/msg":
+                    # Bare /msg → pick a thread, then prompt for the message text.
+                    tid = self._pick_thread("Message a thread — pick one")
+                    if tid is not None:
+                        console.print(f"[dim]Type your message to thread #{tid} (blank to cancel):[/dim]")
+                        console.print("[bold yellow]›[/bold yellow] ", end="")
+                        try:
+                            body = self._read_user_line().strip()
+                        except Exception:
+                            body = ""
+                        if body:
+                            self.send_thread_message(tid, body)
+                        else:
+                            console.print("[dim]Cancelled.[/dim]")
+                    continue
+                if lower.startswith("/msg "):
+                    rest = user_input[len("/msg "):].strip()
+                    parts = rest.split(None, 1)
+                    if len(parts) < 2 or not parts[0].lstrip("#").isdigit():
+                        console.print("[red]Usage: /msg [thread_id] <message>  (or just /msg to pick from a menu)[/red]")
+                    else:
+                        self.send_thread_message(int(parts[0].lstrip("#")), parts[1])
+                    continue
+                if lower.startswith("/newthread"):
+                    rest = user_input[len("/newthread"):].strip()
+                    if not rest:
+                        console.print("[red]Usage: /newthread <title> | <first message>[/red]")
+                    else:
+                        if "|" in rest:
+                            title, content = rest.split("|", 1)
+                            self.create_message_thread(title.strip() or "New thread", content.strip())
+                        else:
+                            self.create_message_thread(rest)
+                    continue
+                if lower.startswith("/alert"):
+                    text = user_input[len("/alert"):].strip()
+                    if not text:
+                        console.print("[red]Usage: /alert <message> — delivers to the inbox and notifies the agent[/red]")
+                    elif self._post_inbox_message(text, alert=True):
+                        console.print("[dim]🔔 Alert sent — the agent was notified and can call check_messages when ready.[/dim]")
+                    else:
+                        console.print("[red]✗ Alert failed (messaging unavailable?)[/red]")
+                    continue
+                if lower == "/model" or lower.startswith("/model "):
+                    arg = user_input[len("/model"):].strip().lower()
+                    current = getattr(self.client, "model_variant", "pro")
+                    is_free = self.billing_client and getattr(self.billing_client, "free_tier", False)
+                    effective = self.billing_client and getattr(self.billing_client, "effective_model", None)
+                    if not arg:
+                        flash_known = bool(getattr(self.client, "flash_model", None))
+                        if is_free and effective:
+                            console.print(f"[dim]Model: [bold]flash[/bold] (enforced by free plan)[/dim]")
+                            console.print(f"[dim]Upgrade to Pro to use /model pro[/dim]")
+                        else:
+                            console.print(f"[dim]Model variant: [bold]{current}[/bold]" + ("" if flash_known else " (flash model not advertised by relay)") + "[/dim]")
+                            console.print("[dim]Switch with /model flash or /model pro[/dim]")
+                    elif arg in ("flash", "pro"):
+                        if is_free and arg == "pro":
+                            console.print("[red]✗[/red] Pro model is not available on the free tier. Upgrade to use /model pro.")
+                        else:
+                            try:
+                                self.client.model_variant = arg
+                                console.print(f"[green]✓[/green] Model variant set to [bold]{arg}[/bold]")
+                            except Exception as e:
+                                console.print(f"[red]✗ Failed to set variant:[/red] {e}")
+                    else:
+                        console.print("[red]Usage: /model [flash|pro][/red]")
+                    continue
                 
                 # Track whether we are inside an active model/tool turn.
                 # This helps Ctrl+C handling distinguish "cancel response" from "exit agent".
@@ -8950,7 +10832,25 @@ You are designed for continuous autonomous operation. "No user input" does not m
                     # produced anything beyond the auto-injected user message itself (for autopilot
                     # empty-turn detection).
                     history_len_before_turn = len(self.conversation_history)
-                    self.run_conversation(user_input, thinking_live=thinking_live, auto_injected=auto_injected)
+                    # While the turn runs, lines typed by the user are captured by the
+                    # stdin reader thread and queued as the next prompt (or routed to the
+                    # inbox via /alert, /msg, /newthread).
+                    self._turn_in_progress = True  # CLIAgent flag
+                    _bar = getattr(self, "_pinned_bar", None)
+                    if _bar and _bar._active:
+                        _bar.set_working(True)  # PromptInputBar._working (reader thread checks this)
+                    # Capture before the try/finally so the outer KeyboardInterrupt
+                    # handler can reliably detect whether a turn was in flight — the
+                    # inner finally resets _turn_in_progress before the outer handler
+                    # ever sees it.
+                    was_agent_responding = True
+                    try:
+                        self.run_conversation(user_input, thinking_live=thinking_live, auto_injected=auto_injected)
+                    finally:
+                        self._turn_in_progress = False
+                        if _bar and _bar._active:
+                            _bar.set_working(False)
+                    was_agent_responding = False
                     agent_turn_in_progress = False
                     # Update autopilot empty-turn counter: a healthy turn appends at least a user
                     # message + an assistant message (and often tool/tool_result pairs). If only the
@@ -9074,7 +10974,7 @@ You are designed for continuous autonomous operation. "No user input" does not m
                 
                 # CRITICAL: Clean up ALL Live contexts to restore terminal state
                 # This prevents terminal from being left in bad state that blocks input
-                agent_responding = bool(locals().get("agent_turn_in_progress", False))
+                agent_responding = bool(locals().get("was_agent_responding", False))
                 try:
                     self._hard_cleanup_live_interrupt()
 
@@ -9101,13 +11001,11 @@ You are designed for continuous autonomous operation. "No user input" does not m
                     except Exception:
                         pass
 
-                    self._hard_cleanup_live_interrupt()
-
                     # CRITICAL: Ensure terminal is fully restored
                     # Flush all streams and wait to ensure cleanup completes
                     sys.stdout.flush()
                     sys.stderr.flush()
-                    time.sleep(0.1)  # Brief pause to ensure cleanup completes and terminal is ready
+                    time.sleep(0.1)
                 except Exception:
                     # Ensure thinking_live is reset even if cleanup fails
                     if 'thinking_live' in locals():
@@ -9126,10 +11024,20 @@ You are designed for continuous autonomous operation. "No user input" does not m
                         suppress_banner = False
                     if not suppress_banner:
                         try:
-                            sys.stdout.write("\n⚠️  Response cancelled. Press Ctrl-C again to exit.\n")
-                            sys.stdout.flush()
+                            reason = getattr(self, "_interrupt_reason", "") or ""
+                            if reason == "Interrupted by /alert":
+                                self._print_interrupt_panel(reason="Interrupted by /alert")
+                                console.print("[dim]Alert delivered; current turn stopped so the agent can handle it next.[/dim]")
+                            else:
+                                sys.stdout.write("\n⚠️  Response cancelled. Press Ctrl-C again to exit.\n")
+                                sys.stdout.flush()
                         except Exception:
                             pass
+                    try:
+                        self._alert_interrupt_requested = False
+                        self._interrupt_reason = ""
+                    except Exception:
+                        pass
                     # Reset interrupt time since we're cancelling the response, not quitting
                     last_interrupt_time = 0
                     agent_turn_in_progress = False
@@ -9149,6 +11057,7 @@ You are designed for continuous autonomous operation. "No user input" does not m
                 # Check if this is a double Ctrl-C (within threshold)
                 if last_interrupt_time > 0 and (current_time - last_interrupt_time) < interrupt_threshold:
                     # Second Ctrl-C - exit immediately
+                    self._prepare_terminal_for_visible_save()
                     self.save_session()
                     try:
                         sys.stdout.write("\nGoodbye! 👋\n")
@@ -9193,6 +11102,7 @@ You are designed for continuous autonomous operation. "No user input" does not m
                 consecutive_error_count += 1
                 console.print(f"[red]Error: {escape(str(e))}[/red]")
                 if consecutive_error_count >= max_consecutive_errors:
+                    self._prepare_terminal_for_visible_save()
                     self.save_session()
                     console.print("\n[red]Too many errors. Exiting safely.[/red]")
                     # Re-raise to let main() handle consistent exit
@@ -9284,8 +11194,8 @@ def main():
         "--provider",
         type=str,
         choices=['deepseek', 'nebius', 'fireworks', 'local'],
-        default='deepseek',
-        help="Model provider (default: deepseek)"
+        default=os.environ.get('SWEET_PROVIDER', 'deepseek'),
+        help="Model provider (default: deepseek; set SWEET_PROVIDER env var to override)"
     )
     parser.add_argument(
         "--model",
@@ -9316,7 +11226,8 @@ def main():
     parser.add_argument(
         "--no-billing",
         action="store_true",
-        help="Use direct DeepSeek API instead of billing relay"
+        default=os.environ.get('SWEET_NO_BILLING', '').lower() in ('1', 'true', 'yes'),
+        help="Use direct API instead of billing relay (set SWEET_NO_BILLING=1 to default on)"
     )
     parser.add_argument(
         '--api-base',
@@ -9349,6 +11260,18 @@ def main():
         help="Keep working continuously without further user input for this long (e.g. '45m', '2h', '1h30m', or 'forever'). Timer starts on your first prompt."
     )
     parser.add_argument(
+        "--model-variant",
+        type=str,
+        choices=["pro", "flash"],
+        help="Relay model variant: 'pro' (flagship, default) or 'flash' (cheaper/faster). Defaults to flash in --247 mode."
+    )
+    parser.add_argument(
+        "--247",
+        dest="always_on",
+        action="store_true",
+        help="24/7 mode: start working immediately, run autopilot forever, check message threads, and sleep when idle. Defaults to the flash model variant."
+    )
+    parser.add_argument(
         "--health-check",
         action="store_true",
         help="Run system health check and exit"
@@ -9363,11 +11286,10 @@ def main():
     if len(sys.argv) > 1 and sys.argv[1] == 'resume':
         # Remove 'resume' from args and continue with normal flow
         sys.argv.pop(1)
-        # Set a flag to load the latest session
+        # SWEET_RESUME marks the `resume` subcommand. When interactive, this
+        # pops an arrow-key session picker (default = latest); otherwise it
+        # falls back to resuming the latest session.
         os.environ['SWEET_RESUME'] = 'true'
-        # Also set --resume-last flag for argparse compatibility
-        if '--resume-last' not in sys.argv:
-            sys.argv.insert(1, '--resume-last')
     
     # Check if first arg is 'login' (before parsing)
     if len(sys.argv) > 1 and sys.argv[1] == 'login':
@@ -9557,6 +11479,23 @@ def main():
         snapshot_compactions=args.snapshot_compactions,
     )
 
+    # Model variant: free tier forces flash; explicit flag overrides for paid.
+    try:
+        if billing_client and billing_client.free_tier:
+            agent.client.model_variant = "flash"
+            console.print("[dim]🔐 Free plan: model forced to flash[/dim]")
+        elif getattr(args, "model_variant", None):
+            agent.client.model_variant = args.model_variant
+        elif getattr(args, "always_on", False):
+            agent.client.model_variant = "flash"
+    except Exception:
+        pass
+
+    # 24/7 mode: autopilot with no time limit.
+    if getattr(args, "always_on", False):
+        agent.continuous_work_seconds = -1
+        console.print(f"[dim]🌙 24/7 mode: autopilot armed (variant: {getattr(agent.client, 'model_variant', 'pro')})[/dim]")
+
     # Configure CLI continuous work mode
     try:
         if getattr(args, "work_for", None):
@@ -9643,8 +11582,52 @@ def main():
                 if os.path.isfile(guess):
                     target_path = guess
         if not target_path:
-            # Default to latest
-            target_path = find_latest_session()
+            # `sweet resume` in a TTY → arrow-key session picker (newest preselected).
+            # Explicit --resume-last, non-TTY, or no sessions → resume latest.
+            use_picker = (
+                os.environ.get('SWEET_RESUME') == 'true'
+                and not args.resume_last
+                and agent._menu_supported()
+            )
+            if use_picker:
+                sessions = _collect_sessions()
+                if not sessions:
+                    target_path = find_latest_session()
+                else:
+                    def _pretty_session_ts(sid: str) -> str:
+                        m = re.match(r"(\d{8})-(\d{6})", sid or "")
+                        if not m:
+                            return sid or "session"
+                        try:
+                            dt = datetime.strptime(m.group(1) + m.group(2), "%Y%m%d%H%M%S")
+                            return dt.strftime("%b %d, %Y · %H:%M")
+                        except Exception:
+                            return sid
+
+                    def _render_sess(s: Dict[str, Any]) -> str:
+                        ts = _pretty_session_ts(s.get("id", ""))
+                        dur = s.get("duration_seconds")
+                        if isinstance(dur, (int, float)) and dur >= 60:
+                            dur_s = f"  ({int(dur)//60}m)"
+                        elif isinstance(dur, (int, float)):
+                            dur_s = f"  ({int(dur)}s)"
+                        else:
+                            dur_s = ""
+                        preview = s.get("last_preview") or "(no preview)"
+                        return f"{ts}{dur_s}  —  {preview}"
+
+                    chosen = agent._interactive_select(
+                        "Resume a session — ↑/↓ to choose (newest first)",
+                        sessions,
+                        render=_render_sess,
+                    )
+                    if chosen:
+                        target_path = chosen.get("path")
+                    else:
+                        console.print("[dim]Resume cancelled — starting a fresh session.[/dim]")
+            else:
+                # Default to latest
+                target_path = find_latest_session()
         if target_path:
             _restore_session(target_path)
             # If autopilot is enabled, arm it immediately on resume and start working right away.
@@ -9685,9 +11668,35 @@ def main():
         
         if prompt:
             agent.run_conversation(prompt)
-            agent.save_session()
+            if getattr(args, "always_on", False):
+                # Stay alive: autopilot continues in interactive mode.
+                agent.interactive_mode()
+            else:
+                agent.save_session()
             return
         else:
+            if getattr(args, "always_on", False):
+                kickoff = (
+                    "You are now running in 24/7 mode. Start your operating loop: "
+                    "1) call check_messages and list_threads to see what the user needs, "
+                    "2) read session.json / your todos / agent journal to re-establish context, "
+                    "3) work on the highest-impact outstanding task, replying to threads as you go, "
+                    "4) when there is genuinely nothing to do, idle with run_command `sleep N` "
+                    "(messages wait in your inbox like email; runtime notifications may tell you inbox events exist), "
+                    "then check messages again. Repeat forever."
+                )
+                # Start the persistent input reader before the (potentially long)
+                # kickoff turn so anything the user types is captured (queued as the
+                # next prompt, or sent to the inbox via /alert, /msg, /newthread).
+                try:
+                    agent._start_stdin_reader()
+                    agent._turn_in_progress = True
+                except Exception:
+                    pass
+                try:
+                    agent.run_conversation(kickoff)
+                finally:
+                    agent._turn_in_progress = False
             agent.interactive_mode()
     except KeyboardInterrupt:
         # Ctrl+C can occur during streaming network reads; avoid dumping a stack trace.
@@ -9696,6 +11705,7 @@ def main():
         except Exception:
             pass
         try:
+            agent._prepare_terminal_for_visible_save()
             agent.save_session()
         except Exception:
             pass
